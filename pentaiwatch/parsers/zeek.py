@@ -7,7 +7,7 @@ import re
 
 from ..errors import MissingField
 from ..schema import START_NONE, START_ZEEK_TS, Flow, ParseStats, ThreatEvent, ZeekEvent
-from ._util import clean_ip, clean_port, clean_proto, count, open_text, parse_ts, text, to_int
+from ._util import clean_ip, clean_port, clean_ports, clean_proto, count, open_text, parse_ts, text, to_int
 
 ESTABLISHED_STATES = {"SF", "S1", "S2", "S3", "RSTO", "RSTR"}
 # REJ: the responder answered the SYN with a reset. Usually the host itself refused (closed port or
@@ -64,10 +64,9 @@ def _to_flow(rec: dict, stats: ParseStats) -> Flow | None:
     if ts is None:
         stats.note("some rows had no parseable timestamp (kept, untimed)")
     proto = clean_proto(rec.get("proto"))
+    src_port, dst_port = clean_ports(proto, rec.get("id.orig_p"), rec.get("id.resp_p"))
     return Flow(
-        ts=ts, src_ip=src, dst_ip=dst,
-        src_port=clean_port(rec.get("id.orig_p")), dst_port=clean_port(rec.get("id.resp_p")),
-        proto=proto,
+        ts=ts, src_ip=src, dst_ip=dst, src_port=src_port, dst_port=dst_port, proto=proto,
         action="reject" if state in REJECTED_STATES else "allow",
         established=(state in ESTABLISHED_STATES or (b_out > 0 and b_in > 0)
                      or _two_way(rec, state, proto)),

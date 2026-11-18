@@ -35,6 +35,11 @@ class Probing:
     min_failed_share: float = 0.70       # share of the sweep's attempts that failed
     # Zeek conn_state values that count as a failed attempt.
     zeek_failed_states: list[str] = field(default_factory=lambda: ["S0", "REJ", "RSTOS0", "RSTR"])
+    # Zeek gives every ICMP record the conn_state OTH whatever happened, so the lists of states
+    # cannot tell an unanswered ping from an answered one. With this on, an ICMP session in a Zeek
+    # log is judged by what came back, as it is on the firewall: nothing back is a failed attempt,
+    # a reply is an answer. Off: ICMP in a Zeek log is neither.
+    zeek_icmp_by_reply: bool = True
 
 
 @dataclass
@@ -48,6 +53,9 @@ class Narrowing:
     min_focus_share: float = 0.60
     # Zeek conn_state values that count as a completed session.
     zeek_answered_states: list[str] = field(default_factory=lambda: ["SF", "S1", "S2", "S3", "RSTO"])
+    # Protocols whose services a source can narrow onto. A host that answers pings is not a service
+    # to come back to, so ICMP counts in the sweep and is never listed as narrowed onto.
+    protocols: list[str] = field(default_factory=lambda: ["tcp", "udp"])
 
 
 # -- Palo Alto logs: nothing about the export's layout is fixed in code ----------------------
@@ -183,6 +191,10 @@ def _apply(target, data: dict, name: str, where: str) -> None:
             if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
                 raise UserError(f"{name}: '{where}{key}' must be a list of text values")
             setattr(target, key, [v.strip() for v in value])
+        elif isinstance(current, bool):
+            if not isinstance(value, bool):
+                raise UserError(f"{name}: '{where}{key}' must be true or false")
+            setattr(target, key, value)
         else:
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise UserError(f"{name}: '{where}{key}' must be a number")
@@ -237,6 +249,10 @@ def check(cfg: Config, name: str = "settings") -> None:
                         ("narrowing.zeek_answered_states", cfg.narrowing.zeek_answered_states)):
         if not states or not all(s.isalnum() for s in states):
             raise UserError(f"{name}: {key} must list Zeek conn_state names such as S0 or SF")
+    known = ("tcp", "udp", "icmp")
+    cfg.narrowing.protocols = [p.lower() for p in cfg.narrowing.protocols]
+    if not cfg.narrowing.protocols or not all(p in known for p in cfg.narrowing.protocols):
+        raise UserError(f"{name}: narrowing.protocols must list one or more of {', '.join(known)}")
     pa = cfg.paloalto
     if not pa.deny_actions or not all(a.strip() for a in pa.deny_actions):
         raise UserError(f"{name}: paloalto.deny_actions must list at least one action, such as deny")

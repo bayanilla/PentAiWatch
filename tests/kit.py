@@ -29,6 +29,20 @@ def session(ts: float, src: str, dst: str, dport: int, state: str = "SF", sport:
             "proto": proto, "duration": duration}
 
 
+def ping(ts: float, src: str, dst: str, answered: bool = False, duration: float = 0.0) -> dict:
+    """One ping (ICMP echo) as a session. Zeek writes the ICMP type (8) and code (0) where the
+    ports go and gives every ICMP record the state OTH, answered or not."""
+    return {"ts": ts, "src": src, "dst": dst, "dport": 0, "state": "OTH", "sport": 8, "proto": "icmp",
+            "duration": duration, "answered": answered}
+
+
+def _zeek_shape(s: dict) -> tuple:
+    if s["proto"] == "icmp":
+        back = bool(s.get("answered"))
+        return "-", 56, 56 if back else 0, 1, 1 if back else 0
+    return _STATE_SHAPE.get(s["state"], ("S", 0, 0, 1, 0))
+
+
 def write_zeek_conn(path: str, sessions: list[dict]) -> str:
     """A Zeek conn.log in TSV form (plain, or gzip when the name ends in .gz)."""
     opener = gzip.open if path.endswith(".gz") else open
@@ -36,7 +50,7 @@ def write_zeek_conn(path: str, sessions: list[dict]) -> str:
         fh.write("#separator \\x09\n#set_separator\t,\n#empty_field\t(empty)\n#unset_field\t-\n#path\tconn\n")
         fh.write("#fields\t" + "\t".join(ZEEK_FIELDS) + "\n#types\t" + "\t".join(ZEEK_TYPES) + "\n")
         for i, s in enumerate(sessions):
-            hist, ob, rb, op, rp = _STATE_SHAPE.get(s["state"], ("S", 0, 0, 1, 0))
+            hist, ob, rb, op, rp = _zeek_shape(s)
             fh.write("\t".join(str(v) for v in (
                 f"{s['ts']:.6f}", f"C{i:08d}", s["src"], s["sport"], s["dst"], s["dport"], s["proto"], "-",
                 f"{s['duration']:.6f}", ob, rb, s["state"], hist, op, rp)) + "\n")
@@ -54,26 +68,46 @@ _PA_SHAPE = {"S0": (74, 0, 0), "REJ": (74, 60, 1), "RSTOS0": (128, 0, 0), "RSTR"
              "SF": (1160, 3340, 7), "S1": (980, 2440, 5), "RSTO": (900, 2040, 5)}
 
 
+def _pa_shape(s: dict, denied) -> tuple[int, int, int]:
+    """(bytes sent, bytes received, packets received) as a firewall would count them."""
+    if s["state"] in denied:
+        return 74, 0, 0
+    if s["proto"] == "icmp":
+        return (98, 98, 1) if s.get("answered") else (98, 0, 0)
+    return _PA_SHAPE.get(s["state"], (74, 0, 0))
+
+
+def _pa_app(s: dict, back: int) -> str:
+    return "ping" if s["proto"] == "icmp" else "ssl" if back > 100 else "incomplete"
+
+
+def _pa_ports(s: dict, ping_ports) -> tuple[int, int]:
+    return tuple(ping_ports) if s["proto"] == "icmp" else (s["sport"], s["dport"])
+
+
 def paloalto_rows(sessions: list[dict], denied=("S0",), start: bool = True, elapsed: bool = False,
-                  packets: bool = False, clock_offset: float = 0.0) -> tuple[list[str], list[list]]:
+                  packets: bool = False, clock_offset: float = 0.0,
+                  ping_ports: tuple[int, int] = (0, 0)) -> tuple[list[str], list[list]]:
     """(header, rows) of a Palo Alto TRAFFIC export for ``sessions``.
 
     The columns are those of the export bundled with VulnScope MAX's samples. Sessions whose state
     is in ``denied`` were stopped by policy (action deny, nothing back); the rest were allowed.
     ``start=False`` leaves the Start Time column out, ``elapsed`` adds "Elapsed Time (sec)" and
     ``packets`` adds "Packets Received". Firewall times are whole seconds; ``clock_offset`` moves
-    the firewall's clock by that many seconds."""
+    the firewall's clock by that many seconds. ``ping_ports`` is what the port columns of a ping
+    hold: 0 and 0 here, an assumption about real exports that the reader does not depend on."""
     header = [h for h in PA_HEADER if start or h != "Start Time"]
     header += (["Elapsed Time (sec)"] if elapsed else []) + (["Packets Received"] if packets else [])
     rows = []
     for s in sessions:
-        sent, back, pkts = (74, 0, 0) if s["state"] in denied else _PA_SHAPE.get(s["state"], (74, 0, 0))
+        sent, back, pkts = _pa_shape(s, denied)
+        sport, dport = _pa_ports(s, ping_ports)
         began, ended = int(s["ts"] + clock_offset), int(s["ts"] + clock_offset + s["duration"])
         row = {"Receive Time": _pa_time(ended), "Serial #": "016401000001", "Type": "TRAFFIC",
                "Threat/Content Type": "deny" if s["state"] in denied else "end", "Source address": s["src"],
-               "Destination address": s["dst"], "Rule": "inbound", "Application": "ssl" if back > 100 else "incomplete",
-               "Source Zone": "untrust", "Destination Zone": "dmz", "Source Port": s["sport"],
-               "Destination Port": s["dport"], "IP Protocol": s["proto"],
+               "Destination address": s["dst"], "Rule": "inbound", "Application": _pa_app(s, back),
+               "Source Zone": "untrust", "Destination Zone": "dmz", "Source Port": sport,
+               "Destination Port": dport, "IP Protocol": s["proto"],
                "Action": "deny" if s["state"] in denied else "allow", "Bytes": sent + back, "Bytes Sent": sent,
                "Bytes Received": back, "Start Time": _pa_time(began), "Threat/Content Name": "", "Severity": "",
                "Elapsed Time (sec)": ended - began, "Packets Received": pkts}
@@ -98,14 +132,15 @@ def write_paloalto_syslog(path: str, sessions: list[dict], denied=("S0",)) -> st
     with open(path, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         for i, s in enumerate(sessions):
-            sent, back, pkts = (74, 0, 0) if s["state"] in denied else _PA_SHAPE.get(s["state"], (74, 0, 0))
+            sent, back, pkts = _pa_shape(s, denied)
+            sport, dport = _pa_ports(s, (0, 0))
             began, ended = int(s["ts"]), int(s["ts"] + s["duration"])
             stopped = s["state"] in denied
             w.writerow([
                 "Nov 18 11:00:00 fw01 1", _pa_time(ended), "016401000001", "TRAFFIC", "deny" if stopped else "end",
                 "2561", _pa_time(ended), s["src"], s["dst"], "0.0.0.0", "0.0.0.0", "inbound", "", "",
-                "ssl" if back > 100 else "incomplete", "vsys1", "untrust", "dmz", "ethernet1/1", "ethernet1/2",
-                "log-forwarding", _pa_time(ended), 100000 + i, 1, s["sport"], s["dport"], 0, 0, "0x19", s["proto"],
+                _pa_app(s, back), "vsys1", "untrust", "dmz", "ethernet1/1", "ethernet1/2",
+                "log-forwarding", _pa_time(ended), 100000 + i, 1, sport, dport, 0, 0, "0x19", s["proto"],
                 "deny" if stopped else "allow", sent + back, sent, back, 1 + pkts, _pa_time(began), ended - began,
                 "any", 0, 7000000 + i, "0x0", "United States", "10.0.0.0-10.255.255.255", 0, 1, pkts,
                 "policy-deny" if stopped else "tcp-fin"])

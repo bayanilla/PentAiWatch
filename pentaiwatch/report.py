@@ -126,14 +126,17 @@ def markdown(res: dict) -> str:
     lines += ["", f"Duplicates removed: {dup['exact']:,} exact, {dup['seen_by_two_sensors']:,} sessions seen "
               "by two sensors and counted once.", "", "## Settings used", ""]
     st = res["settings"]
+    ping = ("a ping with no reply counts as failed in either log" if st["probing"]["zeek_icmp_by_reply"]
+            else "a ping in a Zeek log counts as neither failed nor answered")
     lines += [f"- Internal ranges: {', '.join(st['internal_nets'] + [n['cidr'] for n in res['networks']])}",
               f"- Lookback: {st['lookback_hours']:g} hours back from the last session. Scoring window: "
               f"{st['window_hours']:g} hours.",
               f"- Probing: {st['probing']['min_ports']}+ ports or {st['probing']['min_hosts']}+ hosts, "
               f"{st['probing']['min_failed_share']:.0%}+ failed "
-              f"(Zeek states {', '.join(st['probing']['zeek_failed_states'])}).",
+              f"(Zeek states {', '.join(st['probing']['zeek_failed_states'])}; {ping}).",
               f"- Narrowing: answered services at most {st['narrowing']['max_answered_share']:.0%} of those "
-              f"probed, {st['narrowing']['min_sessions_per_service']}+ completed sessions per service "
+              f"probed, {st['narrowing']['min_sessions_per_service']}+ completed sessions per "
+              f"{_either([p.upper() for p in st['narrowing']['protocols']])} service "
               f"(Zeek states {', '.join(st['narrowing']['zeek_answered_states'])}), starting within "
               f"{st['narrowing']['max_start_delay_minutes']:g} minutes of the sweep, "
               f"{st['narrowing']['min_focus_share']:.0%}+ of later sessions to answered services.",

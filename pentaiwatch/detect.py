@@ -172,12 +172,17 @@ def _classify_addresses(con, cfg: Config) -> None:
 # -- 2. the common session shape ------------------------------------------------------------
 # A session's outcome (failed / answered / other), per kind of sensor. The state lists and the
 # firewall thresholds are bound from the settings when the query runs.
-#   Zeek       by conn_state.
+#   Zeek       by conn_state. ICMP is the exception (probing.zeek_icmp_by_reply): Zeek gives every
+#              ICMP record the state OTH, so a ping is judged by what came back, as on the
+#              firewall. Nothing back: failed. A reply: answered. "Nothing back" is resp_pkts
+#              where the log has it, else zero resp_bytes.
 #   Palo Alto  stopped by the firewall, or allowed with nothing back: failed. Allowed with bytes
 #              back: answered. "Nothing back" is the packets-received count where the export has
 #              one, else zero bytes received.
 _OUTCOME_SQL = """CASE f.sensor
-            WHEN 'zeek' THEN CASE WHEN list_contains(CAST($zeek_failed AS VARCHAR[]), f.state) THEN 'failed'
+            WHEN 'zeek' THEN CASE WHEN $zeek_icmp AND f.proto = 'icmp' AND coalesce(f.pkts_in, f.bytes_in) = 0 THEN 'failed'
+                                  WHEN $zeek_icmp AND f.proto = 'icmp' THEN 'answered'
+                                  WHEN list_contains(CAST($zeek_failed AS VARCHAR[]), f.state) THEN 'failed'
                                   WHEN list_contains(CAST($zeek_answered AS VARCHAR[]), f.state) THEN 'answered'
                                   ELSE 'other' END
             WHEN 'paloalto' THEN CASE WHEN f.action = 'deny' THEN 'failed'
@@ -202,6 +207,7 @@ def _common_sessions(con, cfg: Config, start: datetime) -> None:
           AND f.ts IS NOT NULL AND f.ts >= $start""",
                 {"zeek_failed": list(cfg.probing.zeek_failed_states),
                  "zeek_answered": list(cfg.narrowing.zeek_answered_states),
+                 "zeek_icmp": bool(cfg.probing.zeek_icmp_by_reply),
                  "pa_failed_packets": int(cfg.paloalto.failed_max_packets_received),
                  "pa_answered_bytes": int(cfg.paloalto.answered_min_bytes_received), "start": start})
 
@@ -315,16 +321,21 @@ def _narrowing(con, cfg: Config) -> None:
     (``max_answered_share``); the source came back with ``min_sessions_per_service`` or more
     completed sessions to at least one of them; those returns began no later than
     ``max_start_delay_minutes`` after the sweep's last first attempt; and from then on, for one
-    window, at least ``min_focus_share`` of its sessions went to services that had answered."""
+    window, at least ``min_focus_share`` of its sessions went to services that had answered.
+
+    Only services of the protocols in ``narrowing.protocols`` (TCP and UDP) can be narrowed onto:
+    a host that keeps answering pings is not a service the source came back to."""
     n = cfg.narrowing
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE pw_narrow_svc AS
         SELECT p.src_ip, p.k, v.dst_ip, v.dst_port, v.proto, v.answered, v.return_ts
         FROM pw_probe p JOIN pw_svc v ON v.src_ip = p.src_ip AND {_BUCKET} IN (p.k, p.k + 1)
         WHERE v.answered >= $min_sessions
+          AND list_contains(CAST($protocols AS VARCHAR[]), v.proto)
           AND v.return_ts <= p.probe_end + to_seconds($max_delay)
           AND p.answered <= $max_answered_share * p.services""",
                 {"step": _step(cfg), "min_sessions": int(n.min_sessions_per_service),
+                 "protocols": [p.lower() for p in n.protocols],
                  "max_delay": float(n.max_start_delay_minutes) * 60,
                  "max_answered_share": float(n.max_answered_share)})
     con.execute("""

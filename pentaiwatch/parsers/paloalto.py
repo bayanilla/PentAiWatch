@@ -30,7 +30,7 @@ from datetime import timedelta
 from ..config import PA_REQUIRED, PaloAlto
 from ..errors import MissingField
 from ..schema import (START_END_MINUS_ELAPSED, START_FIELD, START_NONE, Flow, ParseStats, ThreatEvent)
-from ._util import clean_ip, clean_port, clean_proto, count, open_text, parse_ts, to_int
+from ._util import clean_ip, clean_port, clean_ports, clean_proto, count, open_text, parse_ts, to_int
 
 LOG_TYPES = ("TRAFFIC", "THREAT", "SYSTEM", "CONFIG")
 # How each field is named in messages to the person.
@@ -99,10 +99,10 @@ class _Resolver:
             self.methods[method] += 1
         self.sessions += 1
         self.no_packet_count += pkts_in < 0
+        proto = clean_proto(get("protocol"))
+        src_port, dst_port = clean_ports(proto, get("source_port"), get("destination_port"))
         return Flow(
-            ts=ts, src_ip=src, dst_ip=dst,
-            src_port=clean_port(get("source_port")), dst_port=clean_port(get("destination_port")),
-            proto=clean_proto(get("protocol")), action=action,
+            ts=ts, src_ip=src, dst_ip=dst, src_port=src_port, dst_port=dst_port, proto=proto, action=action,
             established=action == "allow" and b_in > 0,
             bytes_out=b_out, bytes_in=b_in, app=(get("application") or "").strip(),
             src_zone=(get("source_zone") or "").strip().lower(),

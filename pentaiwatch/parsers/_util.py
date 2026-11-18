@@ -74,6 +74,15 @@ def clean_port(value):
     return p if p is not None and 0 <= p <= 65535 else None
 
 
+def clean_ports(proto: str, src_port, dst_port) -> tuple[int | None, int | None]:
+    """(source port, destination port) of a session. ICMP has no ports: Zeek writes the ICMP type
+    and code in its port fields and a firewall writes 0, so both become 0 here. A pinged host is
+    then one service whichever log recorded it, and one ping matches across the two logs."""
+    if proto == "icmp":
+        return 0, 0
+    return clean_port(src_port), clean_port(dst_port)
+
+
 def clean_proto(value) -> str:
     s = str(value or "").strip().lower()
     s = PROTO_NUMBERS.get(s, s)

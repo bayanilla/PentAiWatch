@@ -14,7 +14,10 @@ What is checked:
    against the same counts worked out here by a separate, plain reader of conn.log that shares
    no code with PentAIWatch.
 2. The TSV and JSON forms of the log give the same result.
-3. Nothing in the capture is flagged from the Zeek log.
+3. The same sources are flagged from every form of the log. In the capture itself that is one
+   source, an nmap run: a ping sweep, a port scan, then service detection on what answered. Sweep
+   then narrow is what that looks like, so it is a tier 0 finding until the timing signal exists
+   to tell it from an agentic tool.
 4. The synthetic agentic source the unit tests use, added to the capture, IS flagged: from Zeek
    alone, from a Palo Alto form of the same sessions alone, and from both. With both logs every
    session is counted once.
@@ -53,17 +56,18 @@ EXPECTED = {
     "sessions": 1_021_950,
     "inbound_sessions": 665_091,
     "outside_sources": 45,
-    "sweeping_sources": 14,
-    # Zeek: nothing in the real capture is flagged, and the added agent is.
-    "zeek_flagged": [],
-    "zeek_with_agent_flagged": [sample.AGENT],
-    # The Palo Alto form also flags the nmap run. Its unanswered pings are failed probes under the
-    # firewall rule (allowed, no packets back) and are no outcome at all under the Zeek rule
-    # (ICMP has conn_state OTH), so only the firewall form sees its sweep as 70% failed.
+    "sweeping_sources": 15,
+    # 14 of the 15 sweeping sources never narrow. The nmap run does, and is flagged from every form
+    # of the log. (Before pings were judged by their reply in Zeek logs too, only the Palo Alto
+    # form saw its sweep.) When the timing signal lands, expect it to leave these lists.
+    "zeek_flagged": [NMAP],
+    "zeek_with_agent_flagged": [NMAP, sample.AGENT],
     "paloalto_with_agent_flagged": [NMAP, sample.AGENT],
     "both_with_agent_flagged": [NMAP, sample.AGENT],
-    # Whole-second firewall times make 415 pairs of sessions identical; they are kept once.
-    "paloalto_sessions_fewer": 415,
+    # Whole-second firewall times make 713 rows the same as another row (same second, addresses,
+    # ports, protocol and action); each is kept once. 298 of them are pings, which have no ports
+    # to tell two in one second apart.
+    "paloalto_sessions_fewer": 713,
 }
 FAILED = {"S0", "REJ", "RSTOS0", "RSTR"}          # the default probing.zeek_failed_states
 MIN_PORTS, MIN_HOSTS, MIN_FAILED = 50, 20, 0.70   # the default probing thresholds
@@ -97,18 +101,22 @@ def ground_truth(conn_log: str) -> dict:
             if internal(src) or not internal(dst):
                 continue
             inbound += 1
-            key = (src, dst, r["id.resp_p"], r["proto"])
-            seen = (float(r["ts"]), n, r["conn_state"])
+            icmp = r["proto"] == "icmp"
+            # a ping has no ports (Zeek writes the ICMP type and code there) and no telling state
+            # (always OTH): it failed when nothing came back
+            key = (src, dst, "0" if icmp else r["id.resp_p"], r["proto"])
+            failed = r["resp_pkts"] == "0" if icmp else r["conn_state"] in FAILED
+            seen = (float(r["ts"]), n, failed)
             if key not in first or seen < first[key]:
                 first[key] = seen
     per_source: dict[str, dict] = {}
-    for (src, dst, port, proto), (_, _, state) in first.items():
+    for (src, dst, port, proto), (_, _, failed) in first.items():
         s = per_source.setdefault(src, {"services": 0, "hosts": set(), "ports": set(), "failed": 0})
         s["services"] += 1
         s["hosts"].add(dst)
         if proto in ("tcp", "udp"):
             s["ports"].add(port)
-        s["failed"] += state in FAILED
+        s["failed"] += failed
     sweeping = sorted(src for src, s in per_source.items()
                       if (len(s["ports"]) >= MIN_PORTS or len(s["hosts"]) >= MIN_HOSTS)
                       and s["failed"] >= MIN_FAILED * s["services"])
@@ -170,7 +178,7 @@ def main(data: str, work: str) -> int:
         checks.append((f"ground truth: {key}", EXPECTED[key], truth[key]))
         checks.append((f"Zeek TSV: {key}", truth[key], got["zeek_tsv"][key]))
     checks.append(("Zeek JSON gives what Zeek TSV gives", got["zeek_tsv"], got["zeek_json"]))
-    checks.append(("Zeek: flagged in the real capture", EXPECTED["zeek_flagged"], got["zeek_tsv"]["flagged"]))
+    checks.append(("Zeek: flagged in the capture itself", EXPECTED["zeek_flagged"], got["zeek_tsv"]["flagged"]))
     for name in ("zeek_with_agent", "paloalto_with_agent", "both_with_agent"):
         checks.append((f"{name}: flagged", sorted(EXPECTED[f"{name}_flagged"]), got[name]["flagged"]))
     with_agent = EXPECTED["sessions"] + len(agent)

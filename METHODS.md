@@ -30,6 +30,16 @@ For Palo Alto, "no packets back" is the packets-received count when the export h
 (`failed_max_packets_received`, 0). When it has none, zero bytes received stands in, and the
 finding says so. "Bytes back" is `answered_min_bytes_received` (1) or more bytes received.
 
+**Pings are judged the same way in both logs.** Zeek gives every ICMP record the state `OTH`,
+answered or not, so the lists of states cannot judge a ping. In a Zeek log a ping is therefore
+judged by what came back, as the firewall rule already does: nothing back is failed, a reply is
+answered (`probing.zeek_icmp_by_reply`, on). "Nothing back" is `resp_pkts` 0, or zero
+`resp_bytes` when the log has no packet counts. Turn the setting off and ICMP in a Zeek log is
+neither failed nor answered.
+
+ICMP has no ports. Zeek writes the ICMP type and code where the ports go, so whatever a log
+holds there, both readers store 0. A pinged host is then one service whichever log recorded it.
+
 **One difference between the two logs.** A closed port on a path the firewall permits answers
 with a single reset. Zeek calls that `REJ`, which is failed. The firewall logs it as allowed with
 one packet and about 60 bytes back, which is answered under the rule above. Most of a sweep
@@ -62,6 +72,10 @@ from VulnScope MAX, unchanged: same source, destination, ports and protocol, sta
 `dedup_skew_seconds` (2). The firewall's record is the one kept, because it knows the policy
 action, so the outcome of a shared session is judged the Palo Alto way. With one log alone the
 matching has nothing to do.
+
+A ping recorded by both logs is matched on source, destination and start time, since it has no
+ports. Two pings from one source to one host inside the same `dedup_skew_seconds` can therefore
+be counted as one; the sweep is not affected, because it counts each pinged host once anyway.
 
 The start time worked out from end minus elapsed feeds that matching, so an export without a
 start field is still matched to Zeek. Rows with no start time cannot be matched (their time is an
@@ -96,7 +110,9 @@ For a window where probing fired, narrowing fires when all of these hold:
 - Few services answered: the probed services with at least one answered session are at most
   `max_answered_share` (10%) of those probed.
 - The source came back: at least one of them has `min_sessions_per_service` (5) or more answered
-  sessions. Those are the services it *narrowed to*.
+  sessions. Those are the services it *narrowed to*. Only TCP and UDP services can be narrowed
+  to (`narrowing.protocols`): a host that keeps answering pings is not a service the source came
+  back to. Pings still count in the sweep.
 - It came back promptly: the first return (the first answered session after the first attempt)
   is no later than `max_start_delay_minutes` (15) after the sweep's last first attempt.
 - It stayed on what answered: from that point, for one window, at least `min_focus_share` (60%)

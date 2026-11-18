@@ -63,14 +63,16 @@ Each can also be given on the command line: `--network-map`, `--known-scanners`,
     "min_ports": 50,
     "min_hosts": 20,
     "min_failed_share": 0.7,
-    "zeek_failed_states": ["S0", "REJ", "RSTOS0", "RSTR"]
+    "zeek_failed_states": ["S0", "REJ", "RSTOS0", "RSTR"],
+    "zeek_icmp_by_reply": true
   },
   "narrowing": {
     "max_answered_share": 0.1,
     "min_sessions_per_service": 5,
     "max_start_delay_minutes": 15,
     "min_focus_share": 0.6,
-    "zeek_answered_states": ["SF", "S1", "S2", "S3", "RSTO"]
+    "zeek_answered_states": ["SF", "S1", "S2", "S3", "RSTO"],
+    "protocols": ["tcp", "udp"]
   },
   "paloalto": {
     "fields": {
@@ -178,7 +180,7 @@ it over.
 |---|---|---|
 | `pentaiwatch/parsers/zeek.py` | `vulnflow/parsers/zeek.py` | Industrial-protocol handling removed. Each session keeps Zeek's raw `conn_state`, the packets sent back, and a note that its time is a start time. A `conn.log` without `conn_state` stops the run. |
 | `pentaiwatch/parsers/paloalto.py` | `vulnflow/parsers/paloalto.py` | Column names, syslog positions and deny actions moved from the code into the settings. Each session gets a start time (start field, else end minus elapsed, else marked as having none) and the packets sent back. Session-start records are left out. A traffic export without a needed column stops the run instead of being read as empty. |
-| `pentaiwatch/parsers/_util.py` | `vulnflow/parsers/_util.py` | Unchanged. |
+| `pentaiwatch/parsers/_util.py` | `vulnflow/parsers/_util.py` | One addition: a ping (ICMP) is stored without ports by both readers, so the two logs agree on it. |
 | `pentaiwatch/store.py` | `vulnflow/store.py` | Explorer queries and Zeek event storage removed. Three session columns added: `state`, `pkts_in`, `start_method`. De-duplication is the same SQL. Two small tables added: which kinds of log recorded each source (taken before de-duplication), and the IPS alerts. |
 | `pentaiwatch/load.py` | `vulnflow/normalize.py` | Nessus findings removed. Files that are not Zeek or Palo Alto logs are left out and listed. |
 | `pentaiwatch/schema.py` | `vulnflow/schema.py` | Findings and industrial events removed. Sessions gain the three fields above. |
@@ -208,26 +210,27 @@ committed.
     python scripts/realdata/fetch.py brim-data
     python scripts/realdata/check.py brim-data realdata-work
 
-It checks that the counts match a separate plain reading of the log, that nothing in the capture
-is flagged from the Zeek log, and that the agentic source the unit tests use, added to the
+It checks that the counts match a separate plain reading of the log, that the same sources are
+flagged from every form of the log, and that the agentic source the unit tests use, added to the
 capture, is flagged from Zeek alone, from a Palo Alto form of the same sessions, and from both
 with every session counted once. The Palo Alto form is written from the Zeek log by
 `scripts/realdata/to_paloalto.py`; it is not a real firewall log.
 
 What the capture shows about the signals:
 
-- 14 outside sources sweep hard enough to fire the probing signal. None narrows, so none is
-  flagged. Most rescan the same range again and again: after their first return, at most 5% of
-  their sessions go to services that answered. Without the `min_focus_share` condition, 13 of the
-  14 would be flagged.
-- The Palo Alto form of the same sessions flags one more source: an nmap run (ping sweep, port
-  scan, then service detection on what answered). Its unanswered pings are failed probes under
-  the firewall rule and no outcome at all under the Zeek rule, because Zeek gives every ICMP
-  record the state `OTH`. Sweep-then-narrow is what service detection looks like, which is why
-  tier 0 alone is weak evidence and the timing signal matters.
+- 15 outside sources sweep hard enough to fire the probing signal. 14 of them never narrow, so
+  they are not flagged. Most rescan the same range again and again: after their first return, at
+  most 7% of their sessions go to services that answered (two come closer, at 29% and 50%).
+  Without the `min_focus_share` condition, 13 of those 14 would be flagged.
+- One source is flagged, from every form of the log: an nmap run (a ping sweep of 8,192
+  addresses, a port scan, then service detection on what answered). Sweep-then-narrow is what
+  service detection looks like, which is why tier 0 alone is weak evidence and the timing signal
+  matters. Its sweep is mostly pings. Zeek gives every ICMP record the state `OTH`, so a ping is
+  judged by its reply in both logs (see METHODS.md); judged by state alone, the Zeek log missed
+  this sweep and the firewall form did not.
 - A refused connection counts as failed in Zeek (`REJ`) and as answered on the firewall (a reset
-  came back). In this capture, where nothing drops the sweeps, that leaves only 4 of the sweeping
-  sources recognised in the Palo Alto form. See METHODS.md.
+  came back). In this capture, where nothing drops the sweeps, that leaves only 4 of the 15
+  sweeping sources recognised in the Palo Alto form. See METHODS.md.
 
 ## License
 
