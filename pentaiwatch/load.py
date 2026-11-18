@@ -29,6 +29,12 @@ class Dataset:
     cross_sensor_duplicates: int = 0
     store: Store | None = field(default=None, repr=False, compare=False)
 
+    def flow_con(self):
+        """The DuckDB connection holding the clean ``flows`` table."""
+        if self.store is None:
+            raise RuntimeError("this dataset has no store")
+        return self.store.con
+
     def close(self):
         """Delete the working directory (Parquet and the DuckDB file)."""
         if self.store is not None:
@@ -166,8 +172,8 @@ def parse_file(job):
                     alerts.append(r)
                     kept += 1
                 # other Zeek streams (dns, ssl, ...) are read and set aside: not used yet
-        except MissingField:
-            raise                        # a required field is missing: stop with the message
+        except MissingField as exc:      # a required field is missing: stop, naming the file
+            raise MissingField(f"{name}: {exc}") from None
         except Exception as exc:  # a broken file should not sink the whole run
             if resources.explain(exc, None) is not None:
                 raise                    # out of memory or disk: stop, don't report a "broken file"

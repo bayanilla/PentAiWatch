@@ -4,7 +4,7 @@
 #   tests     the unit test suite on Python 3.10 (oldest supported) and 3.13; the 3.13 run measures
 #             coverage and shows it on the run's summary page. A third run uses the OLDEST DuckDB
 #             that requirements.txt allows: the detection is SQL, and a different engine version
-#             can change its answers without any error, so both ends are tested
+#             can change its answers without any error (1.3.0 did), so both ends are tested
 # Nothing here needs secrets, an API key or the network beyond installing the tools.
 name: CI
 

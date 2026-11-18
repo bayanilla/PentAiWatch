@@ -1,2 +1,3 @@
-# The one runtime dependency. 1.1 lacks a read_csv option the session store uses.
-duckdb>=1.2,<2
+# The one runtime dependency. 1.1 lacks a read_csv option the session store uses, and 1.3.0
+# returns wrong results for joins on a time range (see pentaiwatch/engine.py, which refuses both).
+duckdb>=1.2,!=1.3.0,<2

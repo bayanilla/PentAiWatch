@@ -5,6 +5,7 @@ import json
 import os
 import re
 
+from ..errors import MissingField
 from ..schema import START_NONE, START_ZEEK_TS, Flow, ParseStats, ThreatEvent, ZeekEvent
 from ._util import clean_ip, clean_port, clean_proto, count, open_text, parse_ts, text, to_int
 
@@ -45,6 +46,12 @@ def _to_flow(rec: dict, stats: ParseStats) -> Flow | None:
     if not any(k in rec for k in ("conn_state", "orig_bytes", "resp_bytes", "history", "duration")):
         stats.drop("conn record missing connection fields")
         return None
+    if "conn_state" not in rec:
+        # The detection reads every session's outcome from conn_state; without it nothing can be
+        # scored, so the run stops instead of quietly reporting no activity.
+        raise MissingField("Zeek conn records have no conn_state field. The detection reads each "
+                           "session's outcome (failed or completed) from it; export conn.log with "
+                           "conn_state included.")
     src, dst = clean_ip(rec.get("id.orig_h")), clean_ip(rec.get("id.resp_h"))
     if not src or not dst:
         stats.drop("missing or invalid IP")
