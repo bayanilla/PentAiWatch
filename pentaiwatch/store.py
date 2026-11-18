@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 import duckdb
 
 from . import resources
-from .schema import Flow
+from .schema import START_ZEEK_TS, Flow
 
 EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 DEFAULT_BATCH = 100_000
@@ -134,6 +134,10 @@ class Store:
            ``skew_seconds``) is kept once, from the higher-ranked sensor. Two sensors of the same
            kind in different input files (e.g. two Zeek taps) count too: when they agree on the
            action, the most complete record (completed session, then most bytes) is kept.
+        3. A firewall record kept in step 1 or 2 takes the START time of the Zeek record it
+           replaced. Zeek's ts is always the session start, to the microsecond; the firewall's
+           time is in whole seconds, may be worked out from an end time, or may be an end time.
+           (PentAIWatch only: VulnScope MAX keeps the firewall's time.)
         Returns (exact duplicates removed, cross-sensor duplicates removed).
         """
         con = self.con
@@ -148,23 +152,30 @@ class Store:
         con.execute(f"""
             CREATE OR REPLACE TABLE source_sensors AS
             SELECT DISTINCT src_ip, sensor FROM read_parquet('{glob}', hive_partitioning = false)""")
+        same = "PARTITION BY ts_us, src_ip, src_port, dst_ip, dst_port, proto, action"
         con.execute(f"""
             CREATE OR REPLACE TABLE flows_exact AS
-            SELECT * EXCLUDE (ts_us, day), make_timestamp(ts_us) AS ts,
-                   CASE sensor {rank} ELSE 9 END AS sensor_rank
+            SELECT * EXCLUDE (ts_us, day, start_method), make_timestamp(ts_us) AS ts,
+                   CASE sensor {rank} ELSE 9 END AS sensor_rank,
+                   -- the same instant in a Zeek record means that instant is the session START
+                   CASE WHEN bool_or(start_method = '{START_ZEEK_TS}') OVER ({same}) THEN '{START_ZEEK_TS}'
+                        ELSE start_method END AS start_method
             FROM read_parquet('{glob}', hive_partitioning = false)
             -- keep the most complete copy: preferred sensor, then a completed session (one tap may have
             -- seen only the SYN at the same instant), then most bytes, then the one read first
-            QUALIFY row_number() OVER (PARTITION BY ts_us, src_ip, src_port, dst_ip, dst_port, proto, action
+            QUALIFY row_number() OVER ({same}
                                        ORDER BY CASE sensor {rank} ELSE 9 END, established DESC,
                                                 bytes_out + bytes_in DESC, ord) = 1""")
         total = con.execute(f"SELECT count(*) FROM read_parquet('{glob}')").fetchone()[0]
         kept = con.execute("SELECT count(*) FROM flows_exact").fetchone()[0]
         exact = total - kept
         if skew_seconds is not None and skew_seconds >= 0:
+            # every (record that goes, record it is the same session as) pair
             con.execute(f"""
-                CREATE OR REPLACE TEMP TABLE cross_dups AS
-                SELECT DISTINCT a.ord FROM flows_exact a JOIN flows_exact b
+                CREATE OR REPLACE TEMP TABLE cross_pairs AS
+                SELECT a.ord, b.ord AS kept_ord, a.ts, a.start_method, b.sensor_rank < a.sensor_rank AS outranked,
+                       abs(epoch_us(a.ts) - epoch_us(b.ts)) AS apart
+                FROM flows_exact a JOIN flows_exact b
                   ON a.src_ip = b.src_ip AND a.dst_ip = b.dst_ip AND a.src_port = b.src_port
                  AND a.dst_port = b.dst_port AND a.proto = b.proto
                 WHERE (b.sensor_rank < a.sensor_rank
@@ -177,15 +188,31 @@ class Store:
                                          OR (b.bytes_out + b.bytes_in = a.bytes_out + a.bytes_in
                                              AND b.ord < a.ord))))))
                   AND abs(epoch_us(a.ts) - epoch_us(b.ts)) <= {int(skew_seconds * 1_000_000)}""")
+            con.execute("CREATE OR REPLACE TEMP TABLE cross_dups AS SELECT DISTINCT ord FROM cross_pairs")
+            # the start time a kept record takes from the Zeek record it replaced: the one closest
+            # in time when several match (pings between two hosts all share one 5-tuple)
+            con.execute(f"""
+                CREATE OR REPLACE TEMP TABLE zeek_start AS
+                SELECT kept_ord AS ord, ts FROM cross_pairs
+                WHERE outranked AND start_method = '{START_ZEEK_TS}'
+                  AND kept_ord NOT IN (SELECT ord FROM cross_dups)
+                QUALIFY row_number() OVER (PARTITION BY kept_ord ORDER BY apart, ord) = 1""")
+            con.execute("DROP TABLE cross_pairs")
         else:
             con.execute("CREATE OR REPLACE TEMP TABLE cross_dups (ord BIGINT)")
+            con.execute("CREATE OR REPLACE TEMP TABLE zeek_start (ord BIGINT, ts TIMESTAMP)")
         cross = con.execute("SELECT count(*) FROM cross_dups").fetchone()[0]
         con.execute(f"""
             CREATE OR REPLACE TABLE flows AS
+            WITH kept AS (
+                SELECT f.* REPLACE (coalesce(z.ts, f.ts) AS ts,
+                                    CASE WHEN z.ts IS NULL THEN f.start_method ELSE '{START_ZEEK_TS}' END
+                                        AS start_method)
+                FROM flows_exact f ANTI JOIN cross_dups USING (ord) LEFT JOIN zeek_start z USING (ord))
             SELECT row_number() OVER (ORDER BY ts NULLS LAST, ord) AS seq,
                    {_FLOW_TABLE_COLS}
-            FROM flows_exact ANTI JOIN cross_dups USING (ord)""")
-        con.execute("DROP TABLE flows_exact; DROP TABLE cross_dups")
+            FROM kept""")
+        con.execute("DROP TABLE flows_exact; DROP TABLE cross_dups; DROP TABLE zeek_start")
         shutil.rmtree(self.parquet_dir, ignore_errors=True)
         return exact, cross
 

@@ -36,7 +36,7 @@ the signals.
 
 Zeek conn.log and Palo Alto traffic logs are scored alone or together: step 2 turns each into the
 same shape, and a session both recorded has already been counted once by the de-duplication in
-store.py. The threat-log levels (2 and 3) are not built yet.
+store.py, with Zeek's start time. The threat-log levels (2 and 3) are not built yet.
 """
 from __future__ import annotations
 
@@ -269,8 +269,8 @@ def _data_quality(con, cfg: Config) -> list[str]:
                    "scored by their end time, so a sweep and narrowing can still be seen, and they are never "
                    "used for timing.")
         if zeek:
-            out.append("Those sessions cannot be matched to Zeek's record of the same session (the two times "
-                       "differ by the session's length), so some sessions may be counted twice.")
+            out.append("Those sessions were not matched to a Zeek record. Where Zeek saw the same session, the "
+                       "two times differ by the session's length, so some sessions may be counted twice.")
     if firewall and zeek:
         # A session both sensors recorded is normally kept once. Where both copies are still here,
         # their start times were further apart than the de-duplication tolerates: a clock problem.

@@ -67,21 +67,31 @@ Rows resolve one by one, so an export where only some rows have a start time sti
 best answer for each. Sessions recorded as `none` are counted in a warning, once. They still count
 in the sweep and the narrowing, and they are never timed.
 
+Zeek's `ts` comes first: a session that Zeek recorded too is timed by Zeek's `ts`, whatever the
+firewall's own time was (see the next section).
+
 ## When both logs are present
 
 A session recorded by Zeek and by the firewall is counted once. This is the de-duplication taken
-from VulnScope MAX, unchanged: same source, destination, ports and protocol, start times within
+from VulnScope MAX: same source, destination, ports and protocol, start times within
 `dedup_skew_seconds` (2). The firewall's record is the one kept, because it knows the policy
 action, so the outcome of a shared session is judged the Palo Alto way. With one log alone the
 matching has nothing to do.
+
+One thing is added to MAX's matching. The kept record takes its start time from the Zeek record
+it replaced, and is recorded as `zeek_ts`. Zeek's `ts` is exact and always the session start; the
+firewall's time is in whole seconds, and for an export with neither a start nor an elapsed time
+it is an end time, which would leave a session that Zeek timed out of the timing signal. So with
+both logs, the pace of a source is the pace Zeek saw.
 
 A ping recorded by both logs is matched on source, destination and start time, since it has no
 ports. Two pings from one source to one host inside the same `dedup_skew_seconds` can therefore
 be counted as one; the sweep is not affected, because it counts each pinged host once anyway.
 
 The start time worked out from end minus elapsed feeds that matching, so an export without a
-start field is still matched to Zeek. Rows with no start time cannot be matched (their time is an
-end time), and the report warns that such sessions may be counted twice.
+start field is still matched to Zeek. Rows with no start time are matched only when the session
+was short (their time is an end time). The longer ones stay in both logs' copies, the report warns
+that such sessions may be counted twice, and Zeek's copy still gives their start.
 
 Each finding lists the logs that recorded its source, taken before the matching.
 

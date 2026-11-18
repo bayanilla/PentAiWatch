@@ -15,7 +15,7 @@ from pentaiwatch.detect import LEVEL_1, TIER_0, detect
 from pentaiwatch.errors import MissingField, UserError
 from pentaiwatch.load import load
 from pentaiwatch.pipeline import run
-from pentaiwatch.schema import START_END_MINUS_ELAPSED, START_FIELD, START_NONE
+from pentaiwatch.schema import START_END_MINUS_ELAPSED, START_FIELD, START_NONE, START_ZEEK_TS
 from tests import kit, sample
 
 
@@ -62,6 +62,29 @@ class ThreeWaysTests(Base):
     def setUp(self):
         super().setUp()
         self.sessions = sample.sessions()
+
+    def test_a_session_both_logs_recorded_keeps_zeeks_start_time(self):
+        # whichever way the firewall's own time was found: start field, end minus elapsed, or neither
+        # (these sessions are short, so even an end time is within the tolerance of Zeek's start)
+        zeek_only = self.detect(self.zeek(self.sessions)).findings[0]
+        starts = sorted(datetime.fromtimestamp(int(f"{s['ts']:.6f}".replace(".", "")) / 1e6, tz=timezone.utc)
+                        for s in self.sessions)
+        for name, options in (("start field", {}), ("end minus elapsed", {"start": False, "elapsed": True}),
+                              ("neither", {"start": False})):
+            with self.subTest(firewall_time=name):
+                fw = self.firewall(self.sessions, **options)
+                ds = self.load(self.zeek(self.sessions), fw)
+                # every session is kept once, from the firewall's record (it knows the action),
+                # with Zeek's start time
+                self.assertEqual(len(ds.flows), len(self.sessions))
+                self.assertEqual({(f.source, f.start_method) for f in ds.flows},
+                                 {(os.path.basename(fw), START_ZEEK_TS)})
+                self.assertEqual(sorted(f.ts.replace(tzinfo=timezone.utc) for f in ds.flows), starts)
+                got = detect(ds.flow_con(), Config())
+                self.assertEqual([(f.source, f.level) for f in got.findings], [(sample.AGENT, 1)])
+                # so the pace read from both logs is the pace read from Zeek alone
+                self.assertEqual(got.findings[0].timing, zeek_only.timing)
+                self.assertEqual(got.findings[0].start_times, {START_ZEEK_TS: zeek_only.sessions})
 
     def test_each_way_flags_the_same_source_with_the_same_evidence(self):
         zeek = self.detect(self.zeek(self.sessions))
@@ -184,6 +207,16 @@ class StartTimeTests(Base):
         # and the report says the bursts were counted over those sessions only
         text = "\n".join(report._finding_lines(asdict(f), Config().settings()))
         self.assertIn(f", counted over the {timed:,} of its {f.sessions:,} sessions that have a start time |", text)
+
+    def test_long_sessions_with_only_an_end_time_are_still_timed_from_zeek(self):
+        # the firewall's end times are 3 seconds or more after Zeek's starts, so nothing is matched:
+        # both copies stay, the report says so, and Zeek's own records still give the pace
+        got = self.detect(self.zeek(self.sessions), self.firewall(self.sessions, start=False))
+        f = got.findings[0]
+        self.assertEqual((f.source, f.level, f.timing.status), (sample.AGENT, 1, "agentic"))
+        self.assertEqual(f.start_times, {START_NONE: f.sessions // 2, START_ZEEK_TS: f.sessions // 2})
+        self.assertEqual(f.timing.sessions_timed, f.sessions // 2)
+        self.assertIn("may be counted twice", " ".join(got.warnings))
 
     def test_start_worked_out_from_elapsed_still_matches_zeek(self):
         ds = self.load(self.zeek(self.sessions), self.firewall(self.sessions, start=False, elapsed=True))
@@ -434,7 +467,9 @@ class EndToEndTests(Base):
         with open(paths["report.md"]) as fh:
             md = fh.read()
         self.assertIn("| Built from | Palo Alto traffic log and Zeek conn.log |", md)
-        self.assertIn("firewall start-time field", md)
+        # a session both recorded keeps Zeek's start time
+        self.assertEqual(f["start_times"], {START_ZEEK_TS: f["sessions"]})
+        self.assertIn("| Start times resolved by | Zeek ts (always the session start) (3,418 sessions) |", md)
         self.assertIn("| Notes | ", md)
         self.assertIn("Palo Alto: stopped when the action starts with deny, drop, reset or block", md)
         self.assertIn("columns used: the session start time = Start Time", md)

@@ -197,7 +197,8 @@ packet count were read from, so a wrong name shows up there instead of in the re
 the start is the start-time field if it has a value, else the end time minus the elapsed seconds.
 A row with neither keeps its end time, so the sweep and the narrowing can still be seen, is never
 used for timing, and is counted in a warning. Each finding says how its start times were found. A
-source whose sessions have no start time cannot reach level 1: it is reported as tier 0.
+source whose sessions have no start time cannot reach level 1: it is reported as tier 0. When Zeek
+recorded the same session, Zeek's start time is used, whatever the export has.
 
 **Stops instead of guessing.** A traffic export without a column for the source, destination,
 destination port, protocol, action, bytes received, or any time stops the run with a message that
