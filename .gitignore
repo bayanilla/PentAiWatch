@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+.DS_Store
+.vscode/
+.env
+# Outputs of a run
+pentaiwatch_out/
+# Local settings and branding used for testing; never commit
+.vulnscope/
+**/.vulnscope/
+branding.json
+# Code checks (pip install -r requirements-dev.txt)
+.coverage
+.coverage.*
+coverage-html/
+htmlcov/
+.mypy_cache/
+.ruff_cache/
