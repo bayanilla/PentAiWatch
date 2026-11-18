@@ -16,7 +16,8 @@ def main(argv=None) -> int:
     ap.add_argument("--version", action="version", version=f"PentAIWatch {__version__}")
     sub = ap.add_subparsers(dest="cmd", required=True)
     a = sub.add_parser("analyze", help="read logs and write the report")
-    a.add_argument("files", nargs="+", metavar="PATH", help="Zeek conn.log files, or folders that hold them")
+    a.add_argument("files", nargs="+", metavar="PATH",
+                   help="Zeek conn.log files, Palo Alto traffic logs, or folders that hold them")
     a.add_argument("-o", "--out", default="pentaiwatch_out", help="output folder (default pentaiwatch_out)")
     a.add_argument("--config", metavar="JSON",
                    help="settings file (default: pentaiwatch.json in an input folder, else built-in defaults)")

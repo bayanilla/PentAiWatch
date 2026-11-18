@@ -9,7 +9,6 @@ from .config import Config
 from .detect import detect
 from .errors import UserError
 from .load import load
-from .parsers import detect as detect_format
 from .report import write_all
 
 # Version of the results.json layout. Raise it when a field changes meaning or shape.
@@ -21,6 +20,13 @@ LIMITATIONS = [
     "the thresholds or each reported separately.",
     "Only connection metadata is read. A source that is not flagged has not been cleared.",
 ]
+
+
+def _why_empty(stats: list) -> str:
+    """What the files said about themselves when no session came out of any of them."""
+    reasons = [f"{s.file}: {why} ({n:,} rows)" for s in stats for why, n in s.dropped.most_common(2)]
+    reasons += [f"{s.file}: {note}" for s in stats for note in s.notes if "could not be parsed" in note]
+    return " What was read: " + "; ".join(reasons[:6]) + "." if reasons else ""
 
 
 def input_files(paths: list[str], outdir: str) -> list[str]:
@@ -64,24 +70,25 @@ def run(paths: list[str], outdir: str, cfg: Config | None = None, *, config_path
     cfg.known_scanners = [e for path in lists for e in scanners.read(path)]
     logs = [f for f in files if not (config.is_config_file(f) or netmap.is_map_file(f)
                                      or scanners.is_list_file(f) or os.path.basename(f).lower() in NOTES)]
-    warnings = []
-    firewall = [f for f in logs if detect_format(f) == "paloalto"]
-    if firewall:
-        # Palo Alto support arrives with the field map and start-time resolution (next step).
-        warnings.append(f"{len(firewall)} Palo Alto log file(s) were left out: this version scores "
-                        "Zeek conn.log only.")
-        logs = [f for f in logs if f not in firewall]
     if not logs:
-        raise UserError("No log files were given. Point PentAIWatch at Zeek conn.log files or a folder of them.")
+        raise UserError("No log files were given. Point PentAIWatch at Zeek conn.log files, Palo Alto "
+                        "traffic logs, or a folder of them.")
     with resources.job_slot():
         budget = resources.plan(workdir=workdir)
         for warning in budget.warnings:
             print(f"warning: {warning}", file=sys.stderr)
-        ds = load(logs, workdir=workdir, skew_seconds=cfg.dedup_skew_seconds, budget=budget)
+        ds = load(logs, workdir=workdir, skew_seconds=cfg.dedup_skew_seconds, budget=budget,
+                  options={"paloalto": cfg.paloalto})
         try:
             if not ds.flows:
                 raise UserError("No sessions could be read from the input. PentAIWatch needs Zeek conn.log "
-                                "(TSV or JSON, plain or .gz).")
+                                "(TSV or JSON) or Palo Alto traffic logs (CSV export or syslog lines), "
+                                "plain or .gz." + _why_empty(ds.stats))
+            warnings = []
+            unknown = [s.file for s in ds.stats if s.fmt == "unknown"]
+            if unknown:
+                warnings.append(f"{len(unknown)} file(s) are neither Zeek nor Palo Alto logs and were left out: "
+                                + ", ".join(unknown[:5]) + (" and more" if len(unknown) > 5 else "") + ".")
             detection = detect(ds.flow_con(), cfg)
             res = {
                 "schema_version": RESULTS_SCHEMA_VERSION,
@@ -91,6 +98,9 @@ def run(paths: list[str], outdir: str, cfg: Config | None = None, *, config_path
                 "log_sources": ds.sensors,
                 "sessions": len(ds.flows),
                 "duplicates_removed": {"exact": ds.duplicate_flows, "seen_by_two_sensors": ds.cross_sensor_duplicates},
+                # IPS/IDS alerts read, by kind of log (not scored yet)
+                "threat_events": dict(ds.flow_con().execute(
+                    "SELECT sensor, count(*) FROM threats GROUP BY 1 ORDER BY 1").fetchall()),
                 "settings": cfg.settings(),
                 "networks": cfg.networks,
                 "known_scanners": cfg.known_scanners,

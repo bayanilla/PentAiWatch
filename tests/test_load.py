@@ -7,7 +7,7 @@ import unittest
 from pentaiwatch import netmap, scanners
 from pentaiwatch.errors import UserError
 from pentaiwatch.load import load
-from pentaiwatch.schema import START_ZEEK_TS
+from pentaiwatch.schema import START_FIELD, START_ZEEK_TS
 from tests import kit
 
 T0 = 1_790_000_000.0          # a whole second, so Palo Alto's one-second times line up
@@ -51,7 +51,9 @@ class LoadTests(unittest.TestCase):
         ds = self.load(kit.write_paloalto(self.path("traffic.csv"), sessions()))
         flows = list(ds.flows)
         self.assertEqual([f.action for f in flows], ["allow", "deny", "allow", "allow"])
-        self.assertEqual([f.established for f in flows], [True, False, False, False])
+        # a reset from the host is still bytes back, as the firewall counts them
+        self.assertEqual([f.established for f in flows], [True, False, True, True])
+        self.assertEqual([f.start_method for f in flows], [START_FIELD] * 4)
         self.assertEqual(ds.sensors, ["paloalto"])
 
     def test_session_seen_by_both_sensors_counts_once(self):

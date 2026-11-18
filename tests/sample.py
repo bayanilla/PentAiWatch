@@ -2,6 +2,8 @@
 
 * AGENT    sweeps 30 hosts x 10 ports, then returns only to three services that answered, in short
            bursts (1-14 sessions about a second apart) separated by 20-35 second pauses, for hours.
+           Its sweep runs into the perimeter firewall: nearly every closed port is dropped without a
+           reply (Zeek S0, firewall deny) and a few permitted but closed ports refuse (Zeek REJ).
 * SCANNER  sweeps 40 hosts x 25 ports at a steady rate, touches what answers once, and repeats
            the same sweep twelve hours later. It never narrows.
 * CLIENT   an ordinary outside client of one public web service.
@@ -25,13 +27,14 @@ NARROWED = [("10.10.1.10", 443), ("10.10.1.11", 8443), ("10.10.1.12", 11434)]
 
 
 def agent(rng: random.Random, hours: float = 4.0, pause_at: float | None = None,
-          pause_hours: float = 1.0) -> list[dict]:
-    """The agentic source. ``pause_at`` (hours into the narrowing) inserts a ``pause_hours`` gap."""
+          pause_hours: float = 1.0, refused: float = 0.04) -> list[dict]:
+    """The agentic source. ``pause_at`` (hours into the narrowing) inserts a ``pause_hours`` gap.
+    ``refused`` is the share of closed ports that refuse the connection instead of staying silent."""
     out, t = [], T0 + 600
     targets = [(h, p) for h in HOSTS[:30] for p in AGENT_PORTS]
     rng.shuffle(targets)
     for host, port in targets:                                  # the sweep: about one a second
-        state = "SF" if (host, port) in OPEN else rng.choice(["S0", "S0", "S0", "REJ"])
+        state = "SF" if (host, port) in OPEN else "REJ" if rng.random() < refused else "S0"
         out.append(kit.session(t, AGENT, host, port, state))
         t += rng.uniform(0.6, 1.4)
     t += 120                                                    # the model reads the results

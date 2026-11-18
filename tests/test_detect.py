@@ -234,13 +234,6 @@ class EndToEndTests(Base):
             texts.append([self.read(p) for p in paths.values()])
         self.assertEqual(texts[0], texts[1])
 
-    def test_palo_alto_files_are_left_out_with_a_warning_for_now(self):
-        d = self.folder()
-        kit.write_paloalto(os.path.join(d, "traffic.csv"), sample.sessions()[:50])
-        res, _ = run([d], self.path("out"), workdir=self.dir)
-        self.assertIn("Palo Alto log file(s) were left out", res["warnings"][0])
-        self.assertEqual(res["log_sources"], ["zeek"])
-
     def test_no_logs_is_an_error_not_an_empty_report(self):
         err = io.StringIO()
         os.makedirs(self.path("empty"))

@@ -22,7 +22,10 @@ findings; each finding carries the services, hosts and times a later grouping st
 service, time window or network owner) needs, so that step can be added on top without changing
 the signals.
 
-The timing signal and the threat-log levels are not built yet, so every finding is tier 0.
+Zeek conn.log and Palo Alto traffic logs are scored alone or together: step 2 turns each into the
+same shape, and a session both recorded has already been counted once by the de-duplication in
+store.py. The timing signal and the threat-log levels are not built yet, so every finding is
+tier 0.
 """
 from __future__ import annotations
 
@@ -78,6 +81,7 @@ class Finding:
     campaign_hours: float
     timing: str                  # why the timing signal has no result
     threat_evidence: str
+    notes: list[str] = field(default_factory=list)    # what a reader should know about this finding's data
 
 
 @dataclass
@@ -125,6 +129,7 @@ def detect(con, cfg: Config) -> Detection:
             out.warnings.append("No sessions from outside addresses to internal hosts were found. Check that "
                                 "internal_nets (or network_map.csv) covers your address ranges.")
             return out
+        out.warnings += _data_quality(con, cfg)
         out.candidates = _services(con, cfg)
         out.probing_sources = _probing(con, cfg)
         _narrowing(con, cfg)
@@ -165,27 +170,83 @@ def _classify_addresses(con, cfg: Config) -> None:
 
 
 # -- 2. the common session shape ------------------------------------------------------------
-# A session's outcome (failed / answered / other), per kind of sensor. The state lists are bound
-# from the settings when the query runs.
+# A session's outcome (failed / answered / other), per kind of sensor. The state lists and the
+# firewall thresholds are bound from the settings when the query runs.
+#   Zeek       by conn_state.
+#   Palo Alto  stopped by the firewall, or allowed with nothing back: failed. Allowed with bytes
+#              back: answered. "Nothing back" is the packets-received count where the export has
+#              one, else zero bytes received.
 _OUTCOME_SQL = """CASE f.sensor
             WHEN 'zeek' THEN CASE WHEN list_contains(CAST($zeek_failed AS VARCHAR[]), f.state) THEN 'failed'
                                   WHEN list_contains(CAST($zeek_answered AS VARCHAR[]), f.state) THEN 'answered'
                                   ELSE 'other' END
+            WHEN 'paloalto' THEN CASE WHEN f.action = 'deny' THEN 'failed'
+                                      WHEN f.pkts_in IS NOT NULL AND f.pkts_in <= $pa_failed_packets THEN 'failed'
+                                      WHEN f.pkts_in IS NULL AND f.bytes_in = 0 THEN 'failed'
+                                      WHEN f.bytes_in >= $pa_answered_bytes THEN 'answered'
+                                      ELSE 'other' END
             ELSE 'other' END"""
 
 
 def _common_sessions(con, cfg: Config, start: datetime) -> None:
     """Table pw_sessions: inbound sessions since ``start`` from sources that are not allowlisted,
-    one row each: seq, start_ts, start_method, sensor, src_ip, dst_ip, dst_port, proto, outcome."""
+    one row each: seq, start_ts, start_method, sensor, src_ip, src_port, dst_ip, dst_port, proto,
+    outcome, and stand_in (true where zero bytes received stood in for "no packets back")."""
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE pw_sessions AS
-        SELECT f.seq, f.ts AS start_ts, f.start_method, f.sensor, f.src_ip, f.dst_ip,
-               f.dst_port, f.proto, {_OUTCOME_SQL} AS outcome
+        SELECT f.seq, f.ts AS start_ts, f.start_method, f.sensor, f.src_ip, f.src_port, f.dst_ip,
+               f.dst_port, f.proto, {_OUTCOME_SQL} AS outcome,
+               f.sensor = 'paloalto' AND f.action <> 'deny' AND f.pkts_in IS NULL AS stand_in
         FROM flows f JOIN pw_ip s ON s.ip = f.src_ip JOIN pw_ip d ON d.ip = f.dst_ip
         WHERE NOT s.internal AND NOT s.allowed AND d.internal
           AND f.ts IS NOT NULL AND f.ts >= $start""",
                 {"zeek_failed": list(cfg.probing.zeek_failed_states),
-                 "zeek_answered": list(cfg.narrowing.zeek_answered_states), "start": start})
+                 "zeek_answered": list(cfg.narrowing.zeek_answered_states),
+                 "pa_failed_packets": int(cfg.paloalto.failed_max_packets_received),
+                 "pa_answered_bytes": int(cfg.paloalto.answered_min_bytes_received), "start": start})
+
+
+# How many sessions both sensors must have recorded before their clocks are compared.
+MIN_CLOCK_PAIRS = 10
+
+
+def _data_quality(con, cfg: Config) -> list[str]:
+    """Warnings about the scored sessions that change how far the findings can be trusted."""
+    out = []
+    no_start, firewall, zeek = con.execute("""
+        SELECT count(*) FILTER (start_method = 'none'), count(*) FILTER (sensor = 'paloalto'),
+               count(*) FILTER (sensor = 'zeek') FROM pw_sessions""").fetchone()
+    if no_start:
+        out.append(f"{no_start:,} Palo Alto session(s) had neither a start time nor an elapsed time. They are "
+                   "scored by their end time, so a sweep and narrowing can still be seen, and they are never "
+                   "used for timing.")
+        if zeek:
+            out.append("Those sessions cannot be matched to Zeek's record of the same session (the two times "
+                       "differ by the session's length), so some sessions may be counted twice.")
+    if firewall and zeek:
+        # A session both sensors recorded is normally kept once. Where both copies are still here,
+        # their start times were further apart than the de-duplication tolerates: a clock problem.
+        pairs, median = con.execute("""
+            WITH once AS (
+                SELECT sensor, src_ip, src_port, dst_ip, dst_port, proto, min(start_ts) AS ts
+                FROM pw_sessions WHERE start_method <> 'none' AND src_port IS NOT NULL
+                GROUP BY ALL HAVING count(*) = 1)
+            SELECT count(*), median(epoch(p.ts) - epoch(z.ts))
+            FROM once p JOIN once z USING (src_ip, src_port, dst_ip, dst_port, proto)
+            WHERE p.sensor = 'paloalto' AND z.sensor = 'zeek'""").fetchone()
+        if pairs >= MIN_CLOCK_PAIRS and abs(median) > cfg.dedup_skew_seconds:
+            out.append(f"The Palo Alto and Zeek clocks disagree: for {pairs:,} sessions both recorded, the "
+                       f"firewall's start time is {_gap(abs(median))} {'later' if median > 0 else 'earlier'} "
+                       "than Zeek's (median). Those sessions are counted twice and the order of events across "
+                       "the two logs cannot be trusted. Check that both are in UTC and that the clocks are "
+                       "in step, or analyze one log at a time.")
+    return out
+
+
+def _gap(seconds: float) -> str:
+    if seconds >= 5400:
+        return f"{seconds / 3600:.1f} hours"
+    return f"{seconds / 60:.0f} minutes" if seconds >= 90 else f"{seconds:.0f} seconds"
 
 
 # -- 3. services ----------------------------------------------------------------------------
@@ -297,14 +358,20 @@ def _findings(con, nm: NetMap) -> list[Finding]:
         QUALIFY row_number() OVER (PARTITION BY p.src_ip ORDER BY p.services DESC, p.k) = 1
         ORDER BY p.src_ip""").fetchall()
     out = []
+    threat_text = _threat_text(con)
     for src, k, p_start, p_end, services, hosts, ports, failed, answered, n_start, focus in rows:
         svc_rows = con.execute("""
             SELECT dst_ip, dst_port, proto, answered, return_ts FROM pw_narrow_svc
             WHERE src_ip = ? AND k = ? ORDER BY answered DESC, dst_ip, dst_port""", [src, k]).fetchall()
         n, first, last = con.execute(
             "SELECT count(*), min(start_ts), max(start_ts) FROM pw_sessions WHERE src_ip = ?", [src]).fetchone()
-        sensors = [r[0] for r in con.execute(
-            "SELECT DISTINCT sensor FROM pw_sessions WHERE src_ip = ? ORDER BY 1", [src]).fetchall()]
+        sensors = _log_sources(con, src)
+        stand_in = con.execute(
+            "SELECT count(*) FROM pw_sessions WHERE src_ip = ? AND stand_in", [src]).fetchone()[0]
+        notes = []
+        if stand_in:
+            notes.append(f"{stand_in:,} of its Palo Alto sessions come from an export without a packets-received "
+                         "count, so zero bytes received stood in for 'no packets back'.")
         methods = dict(con.execute(
             "SELECT start_method, count(*) FROM pw_sessions WHERE src_ip = ? GROUP BY 1 ORDER BY 1", [src]).fetchall())
         listed = [Service(host=h, port=port, proto=proto, network=nm.name(h), sessions=int(c),
@@ -318,8 +385,35 @@ def _findings(con, nm: NetMap) -> list[Finding]:
             sessions=int(n), first_seen=_iso(first), last_seen=_iso(last),
             campaign_hours=round((last - first).total_seconds() / 3600, 2),
             timing="not evaluated: the timing signal is not built yet",
-            threat_evidence="threat logs not provided"))
+            threat_evidence=threat_text, notes=notes))
     return sorted(out, key=lambda f: (-f.level, -f.sessions, f.source))
+
+
+def _has_table(con, name: str) -> bool:
+    return con.execute("SELECT count(*) FROM information_schema.tables WHERE table_name = ?",
+                       [name]).fetchone()[0] > 0
+
+
+def _log_sources(con, src: str) -> list[str]:
+    """The kinds of log that recorded the source. Read from before the de-duplication where the
+    store kept that (a session seen by both sensors is kept once, under one sensor's name)."""
+    if _has_table(con, "source_sensors"):
+        found = [r[0] for r in con.execute(
+            "SELECT DISTINCT sensor FROM source_sensors WHERE src_ip = ? ORDER BY 1", [src]).fetchall()]
+        if found:
+            return found
+    return [r[0] for r in con.execute(
+        "SELECT DISTINCT sensor FROM pw_sessions WHERE src_ip = ? ORDER BY 1", [src]).fetchall()]
+
+
+def _threat_text(con) -> str:
+    """What a finding says about exploit evidence until the threat-log levels are built."""
+    events = con.execute("SELECT count(*) FROM threats WHERE sensor = 'paloalto'").fetchone()[0] \
+        if _has_table(con, "threats") else 0
+    if not events:
+        return "threat logs not provided"
+    return (f"threat logs were read ({events:,} event{'' if events == 1 else 's'}) but are not scored yet: "
+            "this says nothing either way about exploit attempts")
 
 
 def _iso(ts: datetime | None) -> str:

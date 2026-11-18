@@ -18,6 +18,10 @@ START_METHOD_TEXT = {
     "": "not stated by the log reader",
 }
 SOURCE_TEXT = {"zeek": "Zeek conn.log", "paloalto": "Palo Alto traffic log"}
+# The Palo Alto fields a reader needs to check first: where times and outcomes come from.
+PA_FIELD_TEXT = {"start": "start time", "end": "end time", "elapsed": "elapsed seconds",
+                 "source": "source address", "bytes_received": "bytes received",
+                 "packets_received": "packets received"}
 
 
 def _when(iso: str) -> str:
@@ -34,6 +38,14 @@ def _n(count: int, word: str) -> str:
     return f"{count:,} {word}{'' if count == 1 else 's'}"
 
 
+def _either(words: list[str], last: str = "or") -> str:
+    return ", ".join(words[:-1]) + (f" {last} " if len(words) > 1 else "") + words[-1] if words else ""
+
+
+def _all(words: list[str]) -> str:
+    return _either(words, "and")
+
+
 def _tier(f: dict) -> str:
     return "Tier 0" if f["level"] == 0 else f"Level {f['level']}"
 
@@ -48,7 +60,7 @@ def _finding_lines(f: dict) -> list[str]:
     lines = [f"### {f['source']}: {_tier(f)}. {f['label']}", "",
              "| | |", "|---|---|",
              f"| Tier or level | {_tier(f)}: {f['label']} |",
-             f"| Built from | {', '.join(SOURCE_TEXT.get(s, s) for s in f['log_sources'])} |",
+             f"| Built from | {_all([SOURCE_TEXT.get(s, s) for s in f['log_sources']])} |",
              f"| Start times resolved by | {methods} |",
              f"| Probe start | {_when(f['probe_start'])} |",
              f"| Sweep | {f['services_probed']:,} services tried on {f['hosts_probed']:,} hosts and "
@@ -62,7 +74,10 @@ def _finding_lines(f: dict) -> list[str]:
              f"| Campaign span | {_span(f['campaign_hours'])}, {_when(f['first_seen'])} to "
              f"{_when(f['last_seen'])}, {f['sessions']:,} sessions |",
              f"| Probe start to first vulnerability hit | {f['threat_evidence']} |",
-             f"| Threat hits | {f['threat_evidence']} |", "",
+             f"| Threat hits | {f['threat_evidence']} |"]
+    if f.get("notes"):
+        lines.append(f"| Notes | {' '.join(f['notes'])} |")
+    lines += ["",
              "Services it narrowed to:", "",
              "| Service | Network | Completed sessions | First return |", "|---|---|---|---|"]
     for s in f["services"]:
@@ -77,7 +92,7 @@ def markdown(res: dict) -> str:
     found = det["findings"]
     lines = ["# PentAIWatch report", "",
              f"{res['sessions']:,} sessions were read from "
-             f"{', '.join(SOURCE_TEXT.get(s, s) for s in res['log_sources']) or 'no usable log'}. "
+             f"{_all([SOURCE_TEXT.get(s, s) for s in res['log_sources']]) or 'no usable log'}. "
              f"Scored: {det['inbound_sessions']:,} sessions from "
              f"{_n(det['outside_sources'], 'outside source')} to internal hosts, between {_when(det['lookback_start'] or '')} and "
              f"{_when(det['lookback_end'] or '')}. All times are UTC.", "",
@@ -97,7 +112,7 @@ def markdown(res: dict) -> str:
               "- **Tier 0. Sweep and narrow seen, timing unavailable.** Probing and narrowing fired. The "
               "timing signal (short bursts separated by 20 to 35 second pauses) could not be evaluated.",
               "- **Threat logs not provided** means no exploit evidence could be attached. It does not "
-              "mean there were no exploit attempts.", "",
+              "mean there were no exploit attempts. Threat logs that were read are not scored yet either.", "",
               "### Known limitations", ""]
     lines += [f"- {text}" for text in res["limitations"]] + [""]
     if res["warnings"]:
@@ -122,8 +137,18 @@ def markdown(res: dict) -> str:
               f"(Zeek states {', '.join(st['narrowing']['zeek_answered_states'])}), starting within "
               f"{st['narrowing']['max_start_delay_minutes']:g} minutes of the sweep, "
               f"{st['narrowing']['min_focus_share']:.0%}+ of later sessions to answered services.",
-              f"- Never flagged: {', '.join(st['allowlist'] + [k['cidr'] for k in res['known_scanners']]) or 'nothing listed'}.",
-              ""]
+              f"- Never flagged: {', '.join(st['allowlist'] + [k['cidr'] for k in res['known_scanners']]) or 'nothing listed'}."]
+    if any(i["format"] == "paloalto" for i in res["inputs"]):
+        pa = st["paloalto"]
+        back = pa["failed_max_packets_received"]
+        lines += [f"- Palo Alto: stopped when the action starts with {_either(pa['deny_actions'])}. An allowed "
+                  f"session failed when {'no packets' if back == 0 else 'at most ' + _n(back, 'packet')} came "
+                  "back (zero bytes received where the export has no packet count), and was answered when "
+                  f"{pa['answered_min_bytes_received']:,} or more bytes came back.",
+                  "- Palo Alto columns looked for: " + "; ".join(
+                      f"{label} = {', '.join(pa['fields'][key]) or 'none'}" for key, label in PA_FIELD_TEXT.items())
+                  + ". Syslog lines without a header are read by position. The full field map is in results.json."]
+    lines.append("")
     return "\n".join(lines)
 
 

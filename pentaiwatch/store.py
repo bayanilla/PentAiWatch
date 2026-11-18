@@ -41,6 +41,9 @@ _CSV_TYPES = {"ord": "BIGINT", "ts_us": "BIGINT", "src_ip": "VARCHAR", "dst_ip":
               "fid": "INTEGER", "day": "VARCHAR", "state": "VARCHAR", "pkts_in": "BIGINT",
               "start_method": "VARCHAR"}
 _TEXT_COLUMNS = {"app", "src_zone", "dst_zone", "source", "state", "start_method"}
+THREAT_COLUMNS = {"ts": "TIMESTAMP", "sensor": "VARCHAR", "src_ip": "VARCHAR", "dst_ip": "VARCHAR",
+                  "dst_port": "INTEGER", "name": "VARCHAR", "severity": "VARCHAR", "action": "VARCHAR",
+                  "source": "VARCHAR"}
 # Columns read back into Flow objects, in Flow field order.
 FLOW_SELECT = ("ts, src_ip, dst_ip, dst_port, proto, src_port, action, established, "
                "bytes_out, bytes_in, app, src_zone, dst_zone, source, state, pkts_in, start_method")
@@ -136,9 +139,15 @@ class Store:
         con = self.con
         if not self._batches and not _has_parquet(self.parquet_dir):
             con.execute(f"CREATE OR REPLACE TABLE flows (seq BIGINT, {_FLOW_TABLE})")
+            con.execute("CREATE OR REPLACE TABLE source_sensors (src_ip VARCHAR, sensor VARCHAR)")
             return 0, 0
         rank = " ".join(f"WHEN '{k}' THEN {v}" for k, v in SENSOR_RANK.items())
         glob = _q(os.path.join(self.parquet_dir, "*.parquet"))
+        # Which kinds of log recorded each source, taken BEFORE duplicates are removed: once a
+        # session seen by Zeek and by the firewall is kept once, the kept row names one of them.
+        con.execute(f"""
+            CREATE OR REPLACE TABLE source_sensors AS
+            SELECT DISTINCT src_ip, sensor FROM read_parquet('{glob}', hive_partitioning = false)""")
         con.execute(f"""
             CREATE OR REPLACE TABLE flows_exact AS
             SELECT * EXCLUDE (ts_us, day), make_timestamp(ts_us) AS ts,
@@ -179,6 +188,13 @@ class Store:
         con.execute("DROP TABLE flows_exact; DROP TABLE cross_dups")
         shutil.rmtree(self.parquet_dir, ignore_errors=True)
         return exact, cross
+
+    def save_threats(self, events) -> None:
+        """Table ``threats``: the IPS/IDS alerts of the run, one row each. ``events`` yields
+        (kind of log, ThreatEvent)."""
+        self.insert_rows("threats", THREAT_COLUMNS, (
+            (naive(t.ts), sensor, t.src_ip, t.dst_ip, t.dst_port, t.name, t.severity, t.action, t.source)
+            for sensor, t in events))
 
     def load_flow_list(self, flows: list[Flow]):
         """Load an in-memory list (tests, small callers) as-is: no de-duplication."""

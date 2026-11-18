@@ -43,8 +43,11 @@ class Dataset:
 
 def load(paths: list[str], overrides: dict[str, str] | None = None, *,
          workdir: str | None = None, skew_seconds: float | None = DEFAULT_SKEW_SECONDS,
-         batch_size: int = DEFAULT_BATCH, budget: resources.Budget | None = None) -> Dataset:
-    """overrides maps a file path or basename to a format name.
+         batch_size: int = DEFAULT_BATCH, budget: resources.Budget | None = None,
+         options: dict | None = None) -> Dataset:
+    """overrides maps a file path or basename to a format name. ``options`` maps a format name to
+    that reader's settings (``{"paloalto": cfg.paloalto}``); a format without an entry uses its
+    defaults.
 
     Files are parsed in parallel worker processes (see ``parse_workers``). Sessions stream from
     each parser in batches to Parquet under ``workdir`` and are de-duplicated with DuckDB.
@@ -55,7 +58,7 @@ def load(paths: list[str], overrides: dict[str, str] | None = None, *,
     overrides = overrides or {}
     store = Store(workdir, budget=budget)
     try:
-        return _load(store, paths, overrides, skew_seconds, batch_size)
+        return _load(store, paths, overrides, skew_seconds, batch_size, options or {})
     except Exception as exc:
         store.close()
         friendly = None if isinstance(exc, resources.ResourceError) else resources.explain(exc, store.budget)
@@ -64,7 +67,7 @@ def load(paths: list[str], overrides: dict[str, str] | None = None, *,
         raise
 
 
-def _load(store, paths, overrides, skew_seconds, batch_size) -> Dataset:
+def _load(store, paths, overrides, skew_seconds, batch_size, options) -> Dataset:
     ds = Dataset(store=store)
     jobs = []
     for fid, path in enumerate(paths):
@@ -77,14 +80,16 @@ def _load(store, paths, overrides, skew_seconds, batch_size) -> Dataset:
             continue
         if fmt not in FORMATS:
             raise UserError(f"{name}: unknown format '{fmt}' (choose from {', '.join(FORMATS)})")
-        jobs.append((fid, path, fmt, store.dir, batch_size))
+        jobs.append((fid, path, fmt, store.dir, batch_size, options.get(fmt)))
     threats: dict[tuple, ThreatEvent] = {}
+    kinds: dict[tuple, str] = {}             # alert -> the kind of log it came from
     sensors: set[str] = set()
     for stats, threat_list, n_flows, fatal in _parse_all(jobs, store.budget):
         if fatal:
             raise RuntimeError(fatal)       # out of memory or disk in a worker: resources.explain words it
         for t in threat_list:
             threats[t.key()] = t
+            kinds[t.key()] = stats.fmt
         if n_flows:
             sensors.add(stats.fmt)
         ds.stats.append(stats)
@@ -95,6 +100,7 @@ def _load(store, paths, overrides, skew_seconds, batch_size) -> Dataset:
     ds.duplicate_flows, ds.cross_sensor_duplicates = store.finalize_flows(skew_seconds)
     ds.flows = FlowView(store)
     ds.threats = sorted(threats.values(), key=lambda t: (t.ts is None, t.ts))
+    store.save_threats((kinds[t.key()], t) for t in ds.threats)
     return ds
 
 
@@ -154,7 +160,7 @@ def parse_file(job):
     """Parse one input file (in a worker process or the main one). Sessions are written to Parquet
     in the run's working directory; IPS/IDS alerts, which are few, are returned.
     Returns (stats, alerts, sessions written, fatal error or None)."""
-    fid, path, fmt, workdir, batch_size = job
+    fid, path, fmt, workdir, batch_size, options = job
     name = os.path.basename(path)
     parser = FORMATS[fmt]
     stats = ParseStats(file=name, fmt=fmt)
@@ -163,7 +169,7 @@ def parse_file(job):
     kept = 0
     try:
         try:
-            for r in parser(path, stats):
+            for r in (parser(path, stats, options) if options is not None else parser(path, stats)):
                 r.source = name
                 if isinstance(r, Flow):
                     writer.add_flow(r, fmt)
