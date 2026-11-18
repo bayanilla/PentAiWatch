@@ -129,6 +129,33 @@ built yet. Until then every flagged source is tier 0. A finding says "threat log
 when the run had none, and "threat logs were read but are not scored yet" when it had some, so a
 low tier is never read as "no exploit attempts".
 
+## What the Explorer draws
+
+`explorer.html` draws what the report says. It scores nothing of its own, and it reads the same
+de-duplicated sessions as the detection, so a session both logs recorded counts once on the map too.
+
+- **Sources.** A source is drawn when the probing signal fired for it. The flagged ones carry
+  their finding; the others are marked *Swept, did not narrow*.
+- **One window per source.** Everything about a source's sweep (the services, hosts and ports it
+  tried, the share that failed, what answered) is counted in one window: the one its finding was
+  built from, or, for a source that is not flagged, the one in which it tried the most services. A
+  scanner that repeats its sweep every twelve hours is drawn with one sweep, not with their sum.
+- **Hosts.** A dot is a host that a drawn source tried in that window. It shows the most telling
+  thing that happened to it: a source kept coming back to it, else it answered a sweep, else it
+  was tried and nothing answered.
+- **Subnets.** Hosts are grouped by /24 (IPv6: /64). A ring takes its name from the range in
+  `network_map.csv` that holds its hosts, when there is one.
+- **Cuts.** At most 48 sources (flagged ones first, in the report's order, then the largest
+  sweeps), 120 subnets (those with a host a source kept coming back to first, then by hosts that
+  answered, then by hosts tried) and 2,000 hosts (every host a source kept coming back to, then
+  those that answered, then those only tried, each subnet taking its turn), and 200 services
+  listed per source. Among equals the pick follows a hash of the address, so the same logs always
+  give the same picture. Every count on the page is of the whole run; where less is drawn, the
+  page says how much.
+
+Those four limits are constants in `pentaiwatch/explore.py`, not settings: they say what a
+browser draws comfortably, not what counts as agentic.
+
 ## Data-quality rules
 
 - The DuckDB version is checked before any log is read. The detection is SQL, so a faulty

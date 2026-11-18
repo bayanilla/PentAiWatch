@@ -19,3 +19,5 @@ htmlcov/
 # The real capture the CI check downloads (scripts/realdata/); never commit
 brim-data/
 realdata-work/
+# The browser check of the Explorer (scripts/smoke/)
+smoke-work/

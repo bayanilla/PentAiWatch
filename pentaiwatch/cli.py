@@ -42,5 +42,6 @@ def main(argv=None) -> int:
         tier = "tier 0" if f["level"] == 0 else f"level {f['level']}"
         hosts = len(f["hosts_hit"])
         print(f"  {f['source']}  {tier}: {f['label']}  ({hosts} host{'' if hosts == 1 else 's'} hit)")
-    print(f"Report: {paths['report.html']}")
+    print(f"Report:   {paths['report.html']}")
+    print(f"Explorer: {paths['explorer.html']}")
     return 0

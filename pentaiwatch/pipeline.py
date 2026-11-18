@@ -1,10 +1,10 @@
-"""One call that runs the whole tool: load -> de-duplicate -> detect -> report."""
+"""One call that runs the whole tool: load -> de-duplicate -> detect -> report and Explorer."""
 from __future__ import annotations
 
 import os
 import sys
 
-from . import __version__, config, engine, netmap, resources, scanners
+from . import __version__, config, engine, explore, netmap, resources, scanners
 from .config import Config
 from .detect import detect
 from .errors import UserError
@@ -50,7 +50,7 @@ def input_files(paths: list[str], outdir: str) -> list[str]:
 def run(paths: list[str], outdir: str, cfg: Config | None = None, *, config_path: str | None = None,
         network_map: str | None = None, known_scanners: str | None = None,
         workdir: str | None = None) -> tuple[dict, dict[str, str]]:
-    """Analyze ``paths`` (files or folders) and write the report into ``outdir``.
+    """Analyze ``paths`` (files or folders) and write the report and the Explorer into ``outdir``.
 
     Settings come from ``cfg``, else ``config_path``, else a pentaiwatch.json found in the input,
     else the defaults. network_map.csv and known_scanners.csv found in the input are used too.
@@ -89,7 +89,10 @@ def run(paths: list[str], outdir: str, cfg: Config | None = None, *, config_path
             if unknown:
                 warnings.append(f"{len(unknown)} file(s) are neither Zeek nor Palo Alto logs and were left out: "
                                 + ", ".join(unknown[:5]) + (" and more" if len(unknown) > 5 else "") + ".")
-            detection = detect(ds.flow_con(), cfg)
+            scene = explore.empty()
+            # the Explorer's picture is read while the scoring tables exist
+            detection = detect(ds.flow_con(), cfg,
+                               while_scored=lambda con, found: scene.update(explore.collect(con, cfg, found)))
             res = {
                 "schema_version": RESULTS_SCHEMA_VERSION,
                 "tool": {"name": "PentAIWatch", "version": __version__},
@@ -107,8 +110,13 @@ def run(paths: list[str], outdir: str, cfg: Config | None = None, *, config_path
                 "warnings": warnings + detection.warnings,
                 "detection": detection.to_dict(),
                 "limitations": LIMITATIONS,
+                # the map written next to the report, and how much of the detection is drawn on it
+                "explorer": {"file": explore.FILENAME, "sources_drawn": len(scene["sources"]),
+                             "findings_drawn": sum(1 for s in scene["sources"] if s["flagged"])},
             }
-            return res, write_all(res, outdir)
+            paths = write_all(res, outdir)
+            paths[explore.FILENAME] = explore.write(scene, res, outdir)
+            return res, paths
         except Exception as exc:
             friendly = resources.explain(exc, budget)
             if friendly is not None:

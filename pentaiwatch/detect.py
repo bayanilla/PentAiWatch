@@ -15,7 +15,13 @@ How it works, in order:
                             the completed sessions.
 4. ``_probing``             signal 1, per scoring window.
 5. ``_narrowing``           signal 2, for the windows where probing fired.
-6. ``_findings``            one finding per source, from the window where both fired.
+6. ``_sweeps``              per source, the one window it is judged by.
+7. ``_findings``            one finding per source, from the window where both fired.
+
+The scoring tables (``pw_sessions``, ``pw_svc``, ``pw_probe``, ``pw_narrow_svc``, ``pw_narrow``,
+``pw_sweep``) exist only while ``detect`` runs. A caller that needs more than the findings, such
+as the Explorer (explore.py), passes ``while_scored``: it is called with the connection and the
+finished ``Detection`` just before the tables are dropped.
 
 Scoring is per source address. A campaign that rotates through proxies is split across several
 findings; each finding carries the services, hosts and times a later grouping step (by targeted
@@ -99,8 +105,14 @@ class Detection:
         return asdict(self)
 
 
-def detect(con, cfg: Config) -> Detection:
-    """Flag outside sources whose sessions in ``flows`` show a sweep followed by narrowing."""
+SCORING_TABLES = ("pw_ip", "pw_sessions", "pw_svc", "pw_probe", "pw_narrow_svc", "pw_narrow", "pw_sweep")
+
+
+def detect(con, cfg: Config, *, while_scored=None) -> Detection:
+    """Flag outside sources whose sessions in ``flows`` show a sweep followed by narrowing.
+
+    ``while_scored(con, detection)``, when given, is called once the findings are built and before
+    the scoring tables are dropped. It is not called when there was nothing to score."""
     engine.check()               # a faulty DuckDB version would quietly find nothing
     out = Detection()
     total, untimed, last = con.execute(
@@ -133,9 +145,12 @@ def detect(con, cfg: Config) -> Detection:
         out.candidates = _services(con, cfg)
         out.probing_sources = _probing(con, cfg)
         _narrowing(con, cfg)
+        _sweeps(con)
         out.findings = _findings(con, nm)
+        if while_scored is not None:
+            while_scored(con, out)
     finally:
-        for table in ("pw_ip", "pw_sessions", "pw_svc", "pw_probe", "pw_narrow_svc", "pw_narrow"):
+        for table in SCORING_TABLES:
             con.execute(f"DROP TABLE IF EXISTS {table}")
     return out
 
@@ -259,8 +274,10 @@ def _gap(seconds: float) -> str:
 def _services(con, cfg: Config) -> int:
     """Table pw_svc: per source and service, the first attempt (time, outcome), how many sessions
     completed, and when the source first came back after that first attempt with a completed
-    session (``return_ts``). Only sources that tried enough services to possibly pass signal 1 are
-    kept. Returns how many such sources there are."""
+    session (``return_ts``). ``bucket`` is the half window the first attempt fell in: windows start
+    every half window and window k covers buckets k and k + 1, so a first attempt in bucket b
+    belongs to windows b and b - 1. Only sources that tried enough services to possibly pass
+    signal 1 are kept. Returns how many such sources there are."""
     con.execute("""
         CREATE OR REPLACE TEMP TABLE pw_svc AS
         WITH first AS MATERIALIZED (
@@ -269,26 +286,18 @@ def _services(con, cfg: Config) -> int:
                    count(*) FILTER (outcome = 'answered') AS answered
             FROM pw_sessions GROUP BY ALL),
         busy AS (SELECT src_ip FROM first GROUP BY src_ip HAVING count(*) >= $floor)
-        SELECT v.*, (SELECT min(s.start_ts) FROM pw_sessions s
+        SELECT v.*, CAST(floor(epoch(v.first_ts) / $step) AS BIGINT) AS bucket,
+                    (SELECT min(s.start_ts) FROM pw_sessions s
                      WHERE s.src_ip = v.src_ip AND s.dst_ip = v.dst_ip AND s.proto = v.proto
                        AND s.dst_port IS NOT DISTINCT FROM v.dst_port
                        AND s.outcome = 'answered' AND s.seq > v.first_seq) AS return_ts
         FROM first v WHERE v.src_ip IN (SELECT src_ip FROM busy)""",
-                {"floor": int(min(cfg.probing.min_ports, cfg.probing.min_hosts))})
+                {"floor": int(min(cfg.probing.min_ports, cfg.probing.min_hosts)),
+                 "step": cfg.window_hours * 3600 / 2})
     return con.execute("SELECT count(DISTINCT src_ip) FROM pw_svc").fetchone()[0]
 
 
 # -- 4. signal 1: probing -------------------------------------------------------------------
-# Windows start every half window: window k covers the half-window buckets k and k + 1, so a first
-# attempt in bucket b belongs to windows b and b - 1.
-_BUCKET = "CAST(floor(epoch(v.first_ts) / $step) AS BIGINT)"
-
-
-def _step(cfg: Config) -> float:
-    """Seconds between window starts (half a window)."""
-    return cfg.window_hours * 3600 / 2
-
-
 def _probing(con, cfg: Config) -> int:
     """Table pw_probe: the scoring windows in which a source's sweep fired signal 1.
 
@@ -297,17 +306,17 @@ def _probing(con, cfg: Config) -> int:
     share. Windows are ``window_hours`` long and start every half window, so a sweep that crosses
     a window edge still falls whole inside one window. Returns how many sources fired."""
     p = cfg.probing
-    con.execute(f"""
+    con.execute("""
         CREATE OR REPLACE TEMP TABLE pw_probe AS
         SELECT v.src_ip, k, min(v.first_ts) AS probe_start, max(v.first_ts) AS probe_end,
                count(*) AS services, count(DISTINCT v.dst_ip) AS hosts,
                count(DISTINCT v.dst_port) FILTER (v.proto IN ('tcp', 'udp')) AS ports,
                count(*) FILTER (v.first_outcome = 'failed') AS failed,
                count(*) FILTER (v.answered > 0) AS answered
-        FROM pw_svc v, unnest([{_BUCKET}, {_BUCKET} - 1]) AS w(k)
+        FROM pw_svc v, unnest([v.bucket, v.bucket - 1]) AS w(k)
         GROUP BY v.src_ip, k
         HAVING (ports >= $min_ports OR hosts >= $min_hosts) AND failed >= $min_failed_share * count(*)""",
-                {"step": _step(cfg), "min_ports": int(p.min_ports), "min_hosts": int(p.min_hosts),
+                {"min_ports": int(p.min_ports), "min_hosts": int(p.min_hosts),
                  "min_failed_share": float(p.min_failed_share)})
     return con.execute("SELECT count(DISTINCT src_ip) FROM pw_probe").fetchone()[0]
 
@@ -326,15 +335,15 @@ def _narrowing(con, cfg: Config) -> None:
     Only services of the protocols in ``narrowing.protocols`` (TCP and UDP) can be narrowed onto:
     a host that keeps answering pings is not a service the source came back to."""
     n = cfg.narrowing
-    con.execute(f"""
+    con.execute("""
         CREATE OR REPLACE TEMP TABLE pw_narrow_svc AS
         SELECT p.src_ip, p.k, v.dst_ip, v.dst_port, v.proto, v.answered, v.return_ts
-        FROM pw_probe p JOIN pw_svc v ON v.src_ip = p.src_ip AND {_BUCKET} IN (p.k, p.k + 1)
+        FROM pw_probe p JOIN pw_svc v ON v.src_ip = p.src_ip AND v.bucket IN (p.k, p.k + 1)
         WHERE v.answered >= $min_sessions
           AND list_contains(CAST($protocols AS VARCHAR[]), v.proto)
           AND v.return_ts <= p.probe_end + to_seconds($max_delay)
           AND p.answered <= $max_answered_share * p.services""",
-                {"step": _step(cfg), "min_sessions": int(n.min_sessions_per_service),
+                {"min_sessions": int(n.min_sessions_per_service),
                  "protocols": [p.lower() for p in n.protocols],
                  "max_delay": float(n.max_start_delay_minutes) * 60,
                  "max_answered_share": float(n.max_answered_share)})
@@ -357,17 +366,29 @@ def _narrowing(con, cfg: Config) -> None:
                 {"window": cfg.window_hours * 3600.0, "min_focus_share": float(n.min_focus_share)})
 
 
-# -- 6. findings ----------------------------------------------------------------------------
+# -- 6. the window each source is judged by -------------------------------------------------
+def _sweeps(con) -> None:
+    """Table pw_sweep(src_ip, k, flagged): for every source where probing fired, the one window it
+    is judged by. Windows overlap, so a sweep can fire in two of them. A window where narrowing
+    fired too comes first (the source is flagged); then the window that holds most of the sweep;
+    then the earliest."""
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE pw_sweep AS
+        SELECT p.src_ip, p.k, w.src_ip IS NOT NULL AS flagged
+        FROM pw_probe p LEFT JOIN pw_narrow w USING (src_ip, k)
+        QUALIFY row_number() OVER (PARTITION BY p.src_ip ORDER BY flagged DESC, p.services DESC, p.k) = 1""")
+
+
+# -- 7. findings ----------------------------------------------------------------------------
 def _findings(con, nm: NetMap) -> list[Finding]:
     """One finding per source: the window where probing and narrowing both fired that holds the
-    largest sweep (the earliest such window on a tie), plus everything it did in the lookback (so a campaign that pauses and resumes stays one finding)."""
+    largest sweep (the earliest such window on a tie), plus everything it did in the lookback (so
+    a campaign that pauses and resumes stays one finding)."""
     rows = con.execute("""
         SELECT p.src_ip, p.k, p.probe_start, p.probe_end, p.services, p.hosts, p.ports, p.failed,
                p.answered, w.narrowing_start, w.focus_share
-        FROM pw_narrow w JOIN pw_probe p USING (src_ip, k)
-        -- windows overlap, so a sweep can fire in two of them: keep the one that holds most of it
-        QUALIFY row_number() OVER (PARTITION BY p.src_ip ORDER BY p.services DESC, p.k) = 1
-        ORDER BY p.src_ip""").fetchall()
+        FROM pw_sweep s JOIN pw_probe p USING (src_ip, k) JOIN pw_narrow w USING (src_ip, k)
+        WHERE s.flagged ORDER BY p.src_ip""").fetchall()
     out = []
     threat_text = _threat_text(con)
     for src, k, p_start, p_end, services, hosts, ports, failed, answered, n_start, focus in rows:
@@ -376,7 +397,7 @@ def _findings(con, nm: NetMap) -> list[Finding]:
             WHERE src_ip = ? AND k = ? ORDER BY answered DESC, dst_ip, dst_port""", [src, k]).fetchall()
         n, first, last = con.execute(
             "SELECT count(*), min(start_ts), max(start_ts) FROM pw_sessions WHERE src_ip = ?", [src]).fetchone()
-        sensors = _log_sources(con, src)
+        sensors = log_sources(con, src)
         stand_in = con.execute(
             "SELECT count(*) FROM pw_sessions WHERE src_ip = ? AND stand_in", [src]).fetchone()[0]
         notes = []
@@ -405,7 +426,7 @@ def _has_table(con, name: str) -> bool:
                        [name]).fetchone()[0] > 0
 
 
-def _log_sources(con, src: str) -> list[str]:
+def log_sources(con, src: str) -> list[str]:
     """The kinds of log that recorded the source. Read from before the de-duplication where the
     store kept that (a session seen by both sensors is kept once, under one sensor's name)."""
     if _has_table(con, "source_sensors"):

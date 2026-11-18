@@ -1,7 +1,8 @@
 """The outputs of a run: results.json, and the report as Markdown and as a self-contained HTML page.
 
 Both report files are built from the results alone, so a saved results.json can be turned back
-into the same report.
+into the same report. When the results say an Explorer page was written next to the report
+(``explorer``), the report links to it and to each flagged source on it.
 """
 from __future__ import annotations
 
@@ -55,7 +56,8 @@ def _service(s: dict) -> str:
     return f"{s['host']} {port}"
 
 
-def _finding_lines(f: dict) -> list[str]:
+def _finding_lines(f: dict, map_file: str = "") -> list[str]:
+    """One finding. ``map_file``: the Explorer page that draws this source, when there is one."""
     methods = "; ".join(f"{START_METHOD_TEXT.get(k, k)} ({n:,} sessions)" for k, n in f["start_times"].items())
     lines = [f"### {f['source']}: {_tier(f)}. {f['label']}", "",
              "| | |", "|---|---|",
@@ -77,6 +79,8 @@ def _finding_lines(f: dict) -> list[str]:
              f"| Threat hits | {f['threat_evidence']} |"]
     if f.get("notes"):
         lines.append(f"| Notes | {' '.join(f['notes'])} |")
+    if map_file:
+        lines.append(f"| Map | [Show this source on the map]({map_file}#source={f['source']}) |")
     lines += ["",
              "Services it narrowed to:", "",
              "| Service | Network | Completed sessions | First return |", "|---|---|---|---|"]
@@ -97,17 +101,23 @@ def markdown(res: dict) -> str:
              f"{_n(det['outside_sources'], 'outside source')} to internal hosts, between {_when(det['lookback_start'] or '')} and "
              f"{_when(det['lookback_end'] or '')}. All times are UTC.", "",
              "## Agentic activity", ""]
+    # the Explorer page written next to the report, if any: {"file", "sources_drawn", "findings_drawn"}
+    ex = res.get("explorer") or {}
+    map_file = ex.get("file", "") if ex.get("sources_drawn") else ""
     if found:
         lines += [f"{_n(len(found), 'outside source')} swept your hosts and then returned only to the "
                   "services that answered. That is how agentic, AI-driven pentest tools behave.", ""]
-        for f in found:
-            lines += _finding_lines(f)
+        for i, f in enumerate(found):
+            lines += _finding_lines(f, map_file if i < ex.get("findings_drawn", 0) else "")
     else:
         lines += ["No outside source showed a sweep followed by narrowing.", ""]
     swept_only = det["probing_sources"] - len(found)
     if swept_only > 0:
         lines += [f"{_n(swept_only, 'other source')} swept many hosts or ports and did not narrow. That "
                   "looks like plain scanning and is not flagged.", ""]
+    if map_file:
+        lines += [f"[Open the Explorer]({map_file}) to see every sweep on a map of your subnets, with the "
+                  "services each flagged source came back to.", ""]
     lines += ["### What the tiers mean", "",
               "- **Tier 0. Sweep and narrow seen, timing unavailable.** Probing and narrowing fired. The "
               "timing signal (short bursts separated by 20 to 35 second pauses) could not be evaluated.",
@@ -160,15 +170,21 @@ main{max-width:980px;margin:0 auto;padding:28px 20px 60px}
 h1{font-size:26px;margin:0 0 12px}h2{font-size:20px;margin:32px 0 10px;border-bottom:1px solid #d5d9e0;padding-bottom:6px}
 h3{font-size:16px;margin:24px 0 8px}table{border-collapse:collapse;width:100%;margin:8px 0 14px;background:#fff}
 td,th{border:1px solid #d5d9e0;padding:6px 10px;text-align:left;vertical-align:top}th{background:#eceff3}
-td:first-child{white-space:nowrap}code{background:#eceff3;padding:1px 4px;border-radius:3px}
+td:first-child{white-space:nowrap}code{background:#eceff3;padding:1px 4px;border-radius:3px}a{color:#1558b0}
 @media (prefers-color-scheme:dark){body{color:#e4e7ec;background:#14181f}table{background:#1b212b}
-td,th{border-color:#313948}th,code{background:#252d3a}h2{border-color:#313948}}"""
+td,th{border-color:#313948}th,code{background:#252d3a}h2{border-color:#313948}a{color:#7db4f5}}"""
+
+
+# The only links the report makes: to a page in its own folder, optionally at one source address.
+# Text taken from the logs (file names, notes) can never turn into a link to anywhere else.
+_LINK = re.compile(r"\[([^\[\]]+)\]\(([A-Za-z0-9_-]+\.html(?:#source=[0-9A-Fa-f:.]+)?)\)")
 
 
 def _inline(text: str) -> str:
     text = html.escape(text, quote=False)
     text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
-    return re.sub(r"`(.+?)`", r"<code>\1</code>", text)
+    text = re.sub(r"`(.+?)`", r"<code>\1</code>", text)
+    return _LINK.sub(r'<a href="\2">\1</a>', text)
 
 
 def to_html(md: str, title: str = "PentAIWatch report") -> str:

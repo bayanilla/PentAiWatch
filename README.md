@@ -7,9 +7,10 @@ answered, and short bursts of activity separated by pauses while a model decides
 
 **Status.** This version reads Zeek `conn.log` and Palo Alto traffic logs, alone or together,
 and scores two of the three signals: the sweep and the narrowing. Every flagged source is reported
-as *Tier 0. Sweep and narrow seen, timing unavailable*. The timing signal and the threat-log
-confidence levels arrive in the next pull requests. How each signal is worked out is in
-[METHODS.md](METHODS.md).
+as *Tier 0. Sweep and narrow seen, timing unavailable*. It writes a report and an
+[Explorer](#explorer), a 3D map of what each source swept and came back to. The timing signal, the
+Explorer's Timeline and the threat-log confidence levels arrive in the next pull requests. How
+each signal is worked out is in [METHODS.md](METHODS.md).
 
 ## Run it
 
@@ -32,11 +33,47 @@ The output folder gets:
 | File | What it is |
 |---|---|
 | `report.html` | The report, one self-contained page. Open it in a browser. |
+| `explorer.html` | The [Explorer](#explorer): the same run as a map, one self-contained page. |
 | `report.md` | The same report as Markdown. |
 | `results.json` | Everything the report shows, as data. |
 
 Only connection metadata is read, so nothing here needs SSL decryption. The tool makes no
-network connections.
+network connections, and neither do the pages it writes.
+
+## Explorer
+
+![The Explorer: outside sources on an arc above the subnets they swept](screenshots/explorer.png)
+
+`explorer.html` draws the run as a map, with the look and the controls of VulnScope MAX's Explorer.
+
+- **Rings and dots.** Each ring is one of your subnets (a /24) and each dot a host that an
+  outside source tried: grey when nothing answered, blue when it answered a sweep, and in the
+  tier's colour, on a tall pillar, when a source kept coming back to it.
+- **The INTERNET arc.** The outside sources that swept sit on an arc above the network. A filled
+  diamond is a flagged source, a hollow one swept and did not narrow.
+- **Beams.** A dashed beam is a source's sweep of one subnet. A solid beam goes down to a host
+  the source kept coming back to. With many sources the sweeps fade to a haze, so the solid
+  beams stand out.
+- **Click a source** for its sweep, the hosts it tried and the evidence the report gives.
+  **Click a host** for every source that tried it. Each finding in the report links to its
+  source on the map (`explorer.html#source=203.0.113.50`).
+
+The map opens in 3D on the Low view, slowly turning. Drag rotates, right-drag or Shift-drag pans,
+middle-drag moves the picture up or down and the wheel zooms. **Flat** gives the same picture
+from above with the sources in a row. **?** says what is on screen, and the search box finds a
+source, a host, a subnet or a port.
+
+A big run is cut to what a browser draws comfortably: 48 sources (flagged ones first, then the
+largest sweeps), 120 subnets and 2,000 hosts, chosen so that every host a source kept coming back
+to is drawn. The counts stay whole, and the page says what is not drawn. The Timeline of a
+source's bursts and pauses arrives with the timing signal.
+
+To see it without logs of your own:
+
+    python scripts/smoke/explorer_smoke.py --samples demo --build-only
+
+writes the tests' sample logs into `demo/input/`, analyzes them and leaves
+`demo/zeek_only/explorer.html` (and three more runs) to open.
 
 ## Optional files in the input folder
 
@@ -187,6 +224,18 @@ it over.
 | `pentaiwatch/netmap.py`, `scanners.py` | same names | Reading of `network_map.csv` and `known_scanners.csv` only. |
 | `pentaiwatch/resources.py`, `errors.py` | same names | Settings are named `PENTAIWATCH_...` instead of `VULNSCOPE_...`. |
 
+The Explorer page is put together from MAX's too:
+
+| Here | From MAX | What changed |
+|---|---|---|
+| `pentaiwatch/static/explorer3d.js` | `vulnflow/static/explorer3d.js` | Nothing. The 3D renderer, byte for byte. |
+| `pentaiwatch/static/vendor/three.min.js`, `three.LICENSE` | `vulnflow/static/vendor/` | Nothing. Three.js r149 (MIT). |
+| `pentaiwatch/static/vf_data.js` | `vulnflow/static/vf_data.js` | Three messages reworded. It unpacks the data inside the page. |
+| `pentaiwatch/static/explorer.css` | `vulnflow/static/explorer.css` | MAX's Graphite theme only, as one flat set of rules. Styles of views this tool does not have are gone. |
+| `pentaiwatch/static/explorer.js`, `explorer.html` | `vulnflow/static/explorer.js`, `explorer.html` | Written for this tool, because what is drawn is different: sources, sweeps and the services narrowed onto. The subnet packing, camera, mouse and keyboard controls, label placement and the "?" note follow MAX's. |
+| `pentaiwatch/explore.py` | `vulnflow/explore.py` | The scene is this tool's own. How the data is packed into the page (gzip in base64, scripts inline) is MAX's. |
+| `scripts/smoke/explorer_smoke.py` | same name | The same approach, with this page's checks. |
+
 ## Development
 
     pip install -r requirements-dev.txt
@@ -197,6 +246,15 @@ it over.
 The tests generate their own logs (`tests/kit.py`, `tests/sample.py`): an agentic source, a plain
 scanner and an ordinary client, written as Zeek `conn.log`, as a Palo Alto CSV export and as Palo
 Alto syslog lines. No log files are committed.
+
+The Explorer page is checked in a real browser. `scripts/smoke/explorer_smoke.py` writes the
+sample logs four ways, analyzes them, opens each `explorer.html` in headless Chromium and walks
+the 3D view, a source, a host, the Flat view and the report's link to the map. It fails on any
+page error, on a body or a beam that is not drawn, and on a run with nothing to draw that does
+not say so:
+
+    pip install playwright==1.63.0 && python -m playwright install chromium
+    python scripts/smoke/explorer_smoke.py --samples smoke-work
 
 CI runs the same checks on every pull request.
 
