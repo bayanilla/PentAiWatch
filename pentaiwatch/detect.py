@@ -124,6 +124,10 @@ class Detection:
     candidates: int = 0          # sources that tried enough services to be worth scoring
     probing_sources: int = 0     # sources where signal 1 fired (with or without narrowing)
     narrowing_sources: int = 0   # sources where signals 1 and 2 fired (whatever their timing)
+    # outside sources the allowlist or known_scanners.csv kept out of the scoring, and the inbound
+    # sessions they had inside the lookback: a list that hides a source does not do it quietly
+    never_flagged_sources: int = 0
+    never_flagged_sessions: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -163,6 +167,12 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
         _common_sessions(con, cfg, start)
         out.inbound_sessions, out.outside_sources = con.execute(
             "SELECT count(*), count(DISTINCT src_ip) FROM pw_sessions").fetchone()
+        out.never_flagged_sources, out.never_flagged_sessions = _never_flagged(con, start)
+        if not out.inbound_sessions and out.never_flagged_sessions:
+            out.warnings.append(f"Nothing was scored: all {out.never_flagged_sessions:,} session(s) from outside "
+                                f"addresses to internal hosts came from {out.never_flagged_sources:,} source(s) on "
+                                "the allowlist or in known_scanners.csv.")
+            return out
         if not out.inbound_sessions:
             out.warnings.append("No sessions from outside addresses to internal hosts were found. Check that "
                                 "internal_nets (or network_map.csv) covers your address ranges.")
@@ -252,6 +262,17 @@ def _common_sessions(con, cfg: Config, start: datetime) -> None:
                  "zeek_icmp": bool(cfg.probing.zeek_icmp_by_reply),
                  "pa_failed_packets": int(cfg.paloalto.failed_max_packets_received),
                  "pa_answered_bytes": int(cfg.paloalto.answered_min_bytes_received), "start": start})
+
+
+def _never_flagged(con, start: datetime) -> tuple[int, int]:
+    """(sources, sessions): the outside sources that the allowlist and known_scanners.csv keep out of
+    pw_sessions, and the inbound sessions they had since ``start``."""
+    sources, sessions = con.execute("""
+        SELECT count(DISTINCT f.src_ip), count(*)
+        FROM flows f JOIN pw_ip s ON s.ip = f.src_ip JOIN pw_ip d ON d.ip = f.dst_ip
+        WHERE NOT s.internal AND s.allowed AND d.internal
+          AND f.ts IS NOT NULL AND f.ts >= ?""", [start]).fetchone()
+    return int(sources), int(sessions)
 
 
 # How many sessions both sensors must have recorded before their clocks are compared.

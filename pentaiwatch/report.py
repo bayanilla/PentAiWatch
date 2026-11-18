@@ -11,6 +11,8 @@ import json
 import os
 import re
 
+from . import csp
+
 START_METHOD_TEXT = {
     "zeek_ts": "Zeek ts (always the session start)",
     "start_field": "firewall start-time field",
@@ -54,6 +56,19 @@ def _tier(f: dict) -> str:
 def _service(s: dict) -> str:
     port = f"{s['port']}/{s['proto']}" if s["port"] is not None else s["proto"]
     return f"{s['host']} {port}"
+
+
+FILE_KIND_TEXT = {"settings": "settings", "network_map": "network map", "known_scanners": "known scanners"}
+
+
+def _read_from(files: list[dict]) -> str:
+    """The first line under "Settings used": which settings, network map and known-scanner files
+    this run read, and which of them it found among the input files without being given them."""
+    if not files:
+        return "- Read from: no settings file, network map or known-scanner list. The defaults apply."
+    named = [f"{FILE_KIND_TEXT[f['kind']]} {f['file']}"
+             + (" (found among the input files)" if f["found_in_input"] else "") for f in files]
+    return "- Read from: " + "; ".join(named) + "."
 
 
 def _band(st: dict) -> str:
@@ -123,8 +138,14 @@ def markdown(res: dict) -> str:
              f"{_all([SOURCE_TEXT.get(s, s) for s in res['log_sources']]) or 'no usable log'}. "
              f"Scored: {det['inbound_sessions']:,} sessions from "
              f"{_n(det['outside_sources'], 'outside source')} to internal hosts, between {_when(det['lookback_start'] or '')} and "
-             f"{_when(det['lookback_end'] or '')}. All times are UTC.", "",
-             "## Agentic activity", ""]
+             f"{_when(det['lookback_end'] or '')}. All times are UTC.", ""]
+    if det["never_flagged_sources"]:
+        # what the allowlist and known_scanners.csv kept out, said up front: a list that hides a
+        # source must not do it quietly
+        lines += [f"Left out of the scoring: {_n(det['never_flagged_sessions'], 'session')} from "
+                  f"{_n(det['never_flagged_sources'], 'outside source')} on the allowlist or in "
+                  "known_scanners.csv. The ranges are listed under Settings used.", ""]
+    lines += ["## Agentic activity", ""]
     # the Explorer page written next to the report, if any: {"file", "sources_drawn", "findings_drawn",
     # "timelines": the sources whose Timeline is in the page}
     ex = res.get("explorer") or {}
@@ -182,7 +203,8 @@ def markdown(res: dict) -> str:
     tm = st["timing"]
     ping = ("a ping with no reply counts as failed in either log" if st["probing"]["zeek_icmp_by_reply"]
             else "a ping in a Zeek log counts as neither failed nor answered")
-    lines += [f"- Internal ranges: {', '.join(st['internal_nets'] + [n['cidr'] for n in res['networks']])}",
+    lines += [_read_from(res["settings_files"]),
+              f"- Internal ranges: {', '.join(st['internal_nets'] + [n['cidr'] for n in res['networks']])}",
               f"- Lookback: {st['lookback_hours']:g} hours back from the last session. Scoring window: "
               f"{st['window_hours']:g} hours.",
               f"- Probing: {st['probing']['min_ports']}+ ports or {st['probing']['min_hosts']}+ hosts, "
@@ -199,7 +221,9 @@ def markdown(res: dict) -> str:
               f"each followed by a {_band(st)} pause, and {tm['min_pause_share']:.0%}+ of all the window's pauses "
               f"in that band. A source's pace is only ruled out when {tm['min_timed_share']:.0%}+ of its sessions "
               "have a start time.",
-              f"- Never flagged: {', '.join(st['allowlist'] + [k['cidr'] for k in res['known_scanners']]) or 'nothing listed'}."]
+              f"- Never flagged: {', '.join(st['allowlist'] + [k['cidr'] for k in res['known_scanners']]) or 'nothing listed'}."
+              + (f" That left out {_n(det['never_flagged_sources'], 'outside source')} with "
+                 f"{_n(det['never_flagged_sessions'], 'inbound session')}." if det["never_flagged_sources"] else "")]
     if any(i["format"] == "paloalto" for i in res["inputs"]):
         pa = st["paloalto"]
         back = pa["failed_max_packets_received"]
@@ -272,7 +296,8 @@ def to_html(md: str, title: str = "PentAIWatch report") -> str:
             elif line.strip():
                 out.append(f"<p>{_inline(line)}</p>")
     close()
-    return (f"<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
+    # no script is named in the policy, so none can run in the report
+    return (f"<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">{csp.meta()}"
             f"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
             f"<title>{html.escape(title)}</title><style>{_CSS}</style></head>\n<body><main>\n"
             + "\n".join(out) + "\n</main></body></html>\n")

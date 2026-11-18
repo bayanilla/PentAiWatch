@@ -1,6 +1,8 @@
 """The Explorer page: what it draws is what the report says, cut to a size a browser can draw, and
 the page itself is one file that loads nothing from anywhere."""
+import base64
 import contextlib
+import hashlib
 import json
 import os
 import random
@@ -230,6 +232,44 @@ class PageTests(Base):
         for name in ("explorer.js", "explorer3d.js", "timeline3d.js"):
             for call in ("fetch(", "XMLHttpRequest", "WebSocket(", "sendBeacon", "importScripts", "EventSource", "window.open("):
                 self.assertNotIn(call, explore._read(name), f"{call} in {name}")
+
+    @staticmethod
+    def policy(page):
+        """The page's Content-Security-Policy as {directive: value}; it must come before anything it governs."""
+        (text,) = re.findall(r'<meta http-equiv="Content-Security-Policy" content="([^"]*)">', page)
+        for governed in ("<style", "<script", "<link", "<body"):
+            assert governed not in page or page.index("Content-Security-Policy") < page.index(governed), governed
+        return dict(part.strip().split(" ", 1) for part in text.split(";"))
+
+    def test_the_page_may_run_only_its_own_scripts_and_contact_nothing(self):
+        # csp.py: the second line behind escaping. Text that got into the page some other way can
+        # neither run as script nor send anything out.
+        page = explore.html(self.SCENE, self.RES)
+        rules = self.policy(page)
+        self.assertEqual(rules["default-src"], "'none'")        # also covers requests, frames, fonts and media
+        self.assertEqual((rules["img-src"], rules["base-uri"], rules["form-action"]), ("data:", "'none'", "'none'"))
+        self.assertEqual(sorted(rules), ["base-uri", "default-src", "form-action", "img-src", "script-src", "style-src"])
+        # every inline script is named by the SHA-256 of its exact text; nothing else may run
+        scripts = re.findall(r"<script>(.*?)</script>", page, re.S)
+        self.assertEqual(scripts, [explore._read(name) for name in explore.SCRIPTS])
+        self.assertEqual(rules["script-src"].split(),
+                         ["'sha256-" + base64.b64encode(hashlib.sha256(text.encode("utf-8")).digest()).decode("ascii") + "'"
+                          for text in scripts])
+        for loose in ("unsafe", "http", "*", "data:", "blob:", "self"):
+            self.assertNotIn(loose, rules["script-src"])
+        # the scripts need none of what the policy withholds
+        for name in explore.SCRIPTS:
+            for call in ("eval(", "new Function(", "new Worker(", "createObjectURL("):
+                self.assertNotIn(call, explore._read(name), f"{call} in {name}")
+        self.assertEqual(re.findall(r"\son[a-z]+\s*=", explore._read("explorer.html")), [])     # no inline handlers
+
+    def test_no_script_can_run_in_the_report(self):
+        page = report.to_html("# Title\n\n<script>alert(1)</script> next to [the map](explorer.html)\n")
+        rules = self.policy(page)
+        self.assertEqual(rules["default-src"], "'none'")
+        self.assertNotIn("script-src", rules)                   # so it falls back to 'none'
+        self.assertNotIn("<script", page)
+        self.assertIn('<a href="explorer.html">the map</a>', page)
 
     def test_the_same_scene_gives_the_same_bytes(self):
         self.assertEqual(explore.html(self.SCENE, self.RES), explore.html(self.SCENE, self.RES))

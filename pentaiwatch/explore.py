@@ -42,7 +42,7 @@ import zlib
 from collections import Counter
 from dataclasses import asdict
 
-from . import __version__
+from . import __version__, csp
 from .config import Config
 from .detect import TIMED, Detection, log_sources
 from .netmap import NetMap
@@ -447,14 +447,16 @@ def html(scene: dict, res: dict) -> str:
 
 def write_html(fh, scene: dict, res: dict) -> None:
     """Write the Explorer page: styles, the page's fixed markup, the packed data, then the scripts
-    inline. It loads nothing from the network."""
-    fh.write('<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
-             '<meta name="viewport" content="width=device-width,initial-scale=1">'
+    inline. It loads nothing from the network, and its policy (csp.py) lets it run these scripts
+    only and contact nothing."""
+    scripts = [_read(name) for name in SCRIPTS]
+    fh.write('<!doctype html>\n<html lang="en"><head><meta charset="utf-8">' + csp.meta(scripts)
+             + '<meta name="viewport" content="width=device-width,initial-scale=1">'
              '<title>Explorer · PentAIWatch</title><link rel="icon" href="data:,">'
              "<style>" + "".join(_read(name) for name in STYLES) + "</style></head><body>" + _read("explorer.html"))
     fh.write(DATA_TAG)
     write_data(fh, page_data(scene, res))
-    fh.write("</script>" + "".join("<script>" + _read(name) + "</script>" for name in SCRIPTS)
+    fh.write("</script>" + "".join("<script>" + text + "</script>" for text in scripts)
              + "</body></html>\n")
 
 

@@ -57,20 +57,38 @@ def run(paths: list[str], outdir: str, cfg: Config | None = None, *, config_path
 
     Settings come from ``cfg``, else ``config_path``, else a pentaiwatch.json found in the input,
     else the defaults. network_map.csv and known_scanners.csv found in the input are used too.
+    Every such file that was read is listed in the results (``settings_files``) and in the report,
+    with whether it was named or found among the input files.
     ``workdir`` holds the run's Parquet batches and DuckDB file (default: system temp, or
     $PENTAIWATCH_WORKDIR); it is deleted when the run finishes.
     Returns (results, {output name: path})."""
     engine.check()                                    # before any log is read
     files = input_files(paths, outdir)
     config_files = [f for f in files if config.is_config_file(f)]
+    setup = []                                        # warnings about how the run was set up
+    chosen = None
     if cfg is None:
         chosen = config_path or (config_files[0] if config_files else None)
         cfg = config.read(chosen) if chosen else Config()
+        if not config_path and len(config_files) > 1:
+            setup.append(f"{len(config_files)} settings files ({config.FILENAME}) were found among the input "
+                         f"files. Only {config_files[0]} was used; ignored: {', '.join(config_files[1:])}. "
+                         "Name the one to use with --config.")
     config.check(cfg)
-    maps = [f for f in files if netmap.is_map_file(f)] + ([network_map] if network_map else [])
+    found_maps = [f for f in files if netmap.is_map_file(f)]
+    maps = found_maps + ([network_map] if network_map else [])
     cfg.networks = [e for path in maps for e in netmap.read(path)]          # read first: a bad map fails fast
-    lists = [f for f in files if scanners.is_list_file(f)] + ([known_scanners] if known_scanners else [])
+    found_lists = [f for f in files if scanners.is_list_file(f)]
+    lists = found_lists + ([known_scanners] if known_scanners else [])
     cfg.known_scanners = [e for path in lists for e in scanners.read(path)]
+    # The files that decide what counts as internal and what is never flagged. One left in a log
+    # folder is used without being asked for, so each is named in the results and the report.
+    settings_files = ([{"kind": "settings", "file": chosen, "found_in_input": not config_path}] if chosen else [])
+    settings_files += [{"kind": "network_map", "file": f, "found_in_input": True} for f in found_maps]
+    settings_files += [{"kind": "network_map", "file": network_map, "found_in_input": False}] if network_map else []
+    settings_files += [{"kind": "known_scanners", "file": f, "found_in_input": True} for f in found_lists]
+    settings_files += ([{"kind": "known_scanners", "file": known_scanners, "found_in_input": False}]
+                       if known_scanners else [])
     logs = [f for f in files if not (config.is_config_file(f) or netmap.is_map_file(f)
                                      or scanners.is_list_file(f) or os.path.basename(f).lower() in NOTES)]
     if not logs:
@@ -87,7 +105,7 @@ def run(paths: list[str], outdir: str, cfg: Config | None = None, *, config_path
                 raise UserError("No sessions could be read from the input. PentAIWatch needs Zeek conn.log "
                                 "(TSV or JSON) or Palo Alto traffic logs (CSV export or syslog lines), "
                                 "plain or .gz." + _why_empty(ds.stats))
-            warnings = []
+            warnings = list(setup)
             unknown = [s.file for s in ds.stats if s.fmt == "unknown"]
             if unknown:
                 warnings.append(f"{len(unknown)} file(s) are neither Zeek nor Palo Alto logs and were left out: "
@@ -108,6 +126,7 @@ def run(paths: list[str], outdir: str, cfg: Config | None = None, *, config_path
                 "threat_events": dict(ds.flow_con().execute(
                     "SELECT sensor, count(*) FROM threats GROUP BY 1 ORDER BY 1").fetchall()),
                 "settings": cfg.settings(),
+                "settings_files": settings_files,
                 "networks": cfg.networks,
                 "known_scanners": cfg.known_scanners,
                 "warnings": warnings + detection.warnings,

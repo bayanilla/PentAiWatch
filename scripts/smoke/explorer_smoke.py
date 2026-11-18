@@ -16,7 +16,9 @@ links to a source. A page fails when
     leaving do not work, or
   * the report's "Show this source on the map" link does not open the map on that source, or its
     Timeline link does not open that source's Timeline, or
-  * a run in which nothing swept does not say so.
+  * a run in which nothing swept does not say so, or
+  * the page or the report lets a script that did not come with it run, or lets anything be loaded
+    from or sent to another place (their Content-Security-Policy, pentaiwatch/csp.py, must stop both).
 
 What the page should draw is worked out here from the data packed inside it, not asked of the page.
 
@@ -47,6 +49,41 @@ from pentaiwatch import explore  # noqa: E402
 from tests import kit, sample  # noqa: E402
 
 SETTLE_MS = 1500      # time for a step to settle and draw a few frames
+# What nothing inside a page may do, whoever wrote it: run as a script the page did not come with, run
+# from a handler in its markup, or reach anything outside the file. Each is tried from inside the page
+# and must be stopped by the page's policy, which then names the rule that stopped it.
+POLICY_PROBE = """() => new Promise(done => {
+  const stopped = [];
+  document.addEventListener('securitypolicyviolation', e => stopped.push(e.effectiveDirective));
+  const s = document.createElement('script'); s.textContent = 'window.__pw_probe_script = true'; document.head.appendChild(s);
+  const d = document.createElement('div'); d.hidden = true;
+  d.innerHTML = '<img src="data:image/gif;base64,AAAA" onerror="window.__pw_probe_handler = true">'; document.body.appendChild(d);
+  new Image().src = 'https://example.invalid/probe.png';
+  let sent = false;
+  try { fetch('https://example.invalid/probe').then(() => { sent = true; }, () => {}); } catch (e) { /* refused */ }
+  setTimeout(() => { d.remove(); done({script: !!window.__pw_probe_script, handler: !!window.__pw_probe_handler, sent, stopped}); }, 1000);
+})"""
+POLICY_STOPS = {"script-src-elem": "a script added to the page", "script-src-attr": "a handler in the page's markup",
+                "connect-src": "a request to another place", "img-src": "an image from another place"}
+
+
+def policy(page, name: str, errors: list[str], problems: list[str]) -> None:
+    """Try what the page's policy must stop (POLICY_PROBE) and report whatever got through."""
+    got = page.evaluate(POLICY_PROBE)
+    page.wait_for_timeout(200)
+    # the browser logs each refusal as a console error; those are the probe's own and are wanted
+    errors[:] = [e for e in errors if "Content Security Policy" not in e]
+    if got["script"]:
+        problems.append(f"{name}: a script that did not come with the page ran in it")
+    if got["handler"]:
+        problems.append(f"{name}: a handler written into the page's markup ran")
+    if got["sent"]:
+        problems.append(f"{name}: the page could send a request to another place")
+    missed = [what for rule, what in POLICY_STOPS.items() if rule not in got["stopped"]]
+    if missed:
+        problems.append(f"{name}: the page's policy did not stop {', '.join(missed)}")
+    while errors:
+        problems.append(f"{name}: {errors.pop(0)}")
 NETWORK_MAP = "cidr,name,type\n10.10.1.0/24,DMZ,on-prem\n10.10.2.0/24,Servers,on-prem\n"
 BIG_SCANNER = "198.51.100.200"
 
@@ -362,6 +399,7 @@ def walk(page_path: Path, browser, shots: Path, problems: list[str]) -> None:
     if not want["sources"]:
         if page.evaluate("document.getElementById('empty').hidden") or "Nothing to draw" not in page.inner_text("#empty"):
             problems.append("nothing swept, and the page does not say so")
+        policy(page, "policy", errors, problems)
         page.close()
         return
     if not page.evaluate("PWExplorer.can3d"):
@@ -408,6 +446,7 @@ def walk(page_path: Path, browser, shots: Path, problems: list[str]) -> None:
         bodies("back-to-3d", s)
         if s.get("frames", 0) <= before:
             problems.append("back-to-3d: the page stopped drawing")
+    policy(page, "policy", errors, problems)
     page.close()
 
     # the report's link to a flagged source opens the map on it
@@ -415,7 +454,9 @@ def walk(page_path: Path, browser, shots: Path, problems: list[str]) -> None:
     if report.is_file():
         page = browser.new_page(viewport={"width": 1440, "height": 900})
         page.on("pageerror", lambda e: errors.append(f"uncaught: {e}"))
+        page.on("console", lambda m: errors.append(f"console.error: {m.text}") if m.type == "error" else None)
         page.goto(report.resolve().as_uri())
+        policy(page, "report-policy", errors, problems)
         link = page.query_selector('a[href^="explorer.html#source="]')
         if link:
             ip = link.get_attribute("href").split("=", 1)[1]

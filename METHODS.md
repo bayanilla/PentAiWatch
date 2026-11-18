@@ -12,7 +12,9 @@ All times are UTC. Every number below is a setting (see the README).
 
 An address is internal when it is inside `internal_nets` (RFC 1918 by default) or inside a range
 listed in `network_map.csv`. Everything else is outside. Sources in `known_scanners.csv` or in
-the `allowlist` setting are never scored.
+the `allowlist` setting are never scored. The report counts them: how many outside sources the
+two lists left out, and how many inbound sessions those sources had inside the lookback
+(`never_flagged_sources` and `never_flagged_sessions` in `results.json`).
 
 ## One session shape for every log
 
@@ -270,6 +272,14 @@ worked out by the timing signal and travels to the page with the data.
   address is still visible.
 - When no session goes from an outside address to an internal host, the report says so and
   points at the internal ranges.
+- When every such session came from a source on the allowlist or in `known_scanners.csv`, the
+  report says that instead, with the counts: the lists left nothing to score.
+- The settings file, network maps and known-scanner lists a run read are listed in
+  `results.json` (`settings_files`) and on the first line under *Settings used*, each marked when
+  it was found among the input files and not named on the command line. A file dropped into a
+  log folder changes what is flagged, so it must not do that unseen.
+- When more than one `pentaiwatch.json` is found among the input files, the first is used and a
+  warning names the others.
 - A session recorded twice (two Zeek taps, or Zeek and a firewall) is counted once. See "When
   both logs are present".
 - A file that is neither a Zeek nor a Palo Alto log is left out, listed in the input table and

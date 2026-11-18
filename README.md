@@ -120,6 +120,13 @@ writes the tests' sample logs into `demo/input/`, analyzes them and leaves
 
 Each can also be given on the command line: `--network-map`, `--known-scanners`, `--config`.
 
+A file with one of these names anywhere under the input folder is used without being asked for,
+and each of them changes what gets flagged. So the report says which ones it read (the first line
+under *Settings used*, with "found among the input files" where it was not named on the command
+line), and it counts the outside sources and sessions that the allowlist and
+`known_scanners.csv` left out of the scoring. When more than one `pentaiwatch.json` is found, the
+first is used, a warning names the others, and `--config` settles it.
+
 ### Settings
 
 `pentaiwatch.json` only needs the settings you change. These are all of them, with defaults:
@@ -236,6 +243,34 @@ recorded the same session, Zeek's start time is used, whatever the export has.
 destination port, protocol, action, bytes received, or any time stops the run with a message that
 names the file, what is missing and the columns the file does have.
 
+## Security notes
+
+PentAIWatch reads logs that an outsider's traffic helped to write, and it is meant to run on an
+analyst's machine or in a closed network. What it does about that:
+
+- **Nothing leaves the machine.** The tool makes no network connections. DuckDB is told not to
+  download or load extensions, which its clients otherwise do the first time a query needs one.
+  The pages load nothing from anywhere.
+- **Logs are only ever read as text.** Nothing in a log is run, addresses must parse as
+  addresses, and values reach the database as values, never as part of a query.
+- **The pages cannot run anything they did not come with.** Everything shown in `report.html`
+  and `explorer.html` is escaped. Behind that, both carry a Content-Security-Policy: the report
+  runs no script at all, the Explorer runs only the scripts written into it (each named by its
+  SHA-256), and neither can load or send anything. The browser check tries all of that from
+  inside both pages and fails if any of it gets through.
+- **Files in the input folder are trusted.** A `pentaiwatch.json`, `network_map.csv` or
+  `known_scanners.csv` left in a log folder decides what is internal and what is never flagged.
+  The report names each one it read and counts what the never-flag lists left out (see
+  [Optional files in the input folder](#optional-files-in-the-input-folder)). Read that line
+  when the logs come from a folder other people can write to.
+- **A hostile log can cost time and disk, nothing else.** A `.gz` that unpacks to far more than
+  its size, or a log with very long lines, makes a run slow and takes space in the work folder
+  until the run ends. DuckDB's memory and its temporary files are capped for every run. The work
+  folder is private to the run and removed afterwards.
+
+The output folder is created readable by you alone when PentAIWatch makes it. The reports hold
+your internal addresses, so treat them like the logs they came from.
+
 ## Known limitations
 
 - **Proxy rotation splits campaigns.** These tools rotate through residential, datacenter and
@@ -303,8 +338,9 @@ The Explorer page is checked in a real browser. `scripts/smoke/explorer_smoke.py
 sample logs five ways, analyzes them, opens each `explorer.html` in headless Chromium and walks
 the 3D view, every source, a host, the Timeline, the Flat view and the report's links to the map
 and to the Timeline. It fails on any page error, on a body or a beam that is not drawn, on a
-Timeline window that does not hold the sessions, bursts and pauses the data has for it, and on a
-run with nothing to draw that does not say so:
+Timeline window that does not hold the sessions, bursts and pauses the data has for it, on a run
+with nothing to draw that does not say so, and on a page or report whose policy lets a foreign
+script run or anything be loaded or sent:
 
     pip install playwright==1.63.0 && python -m playwright install chromium
     python scripts/smoke/explorer_smoke.py --samples smoke-work

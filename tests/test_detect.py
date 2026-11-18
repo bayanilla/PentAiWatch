@@ -227,6 +227,104 @@ class EndToEndTests(Base):
         self.assertEqual(res["detection"]["findings"], [])
         self.assertEqual(res["settings"]["allowlist"], [sample.AGENT])
 
+    def test_a_list_that_hides_a_source_does_not_do_it_quietly(self):
+        # A settings file left in a log folder is used without being asked for, and its allowlist can
+        # take a source out of the scoring. The results and the report name the file and count what
+        # the list kept out.
+        d = self.folder()
+        hidden = sum(1 for x in sample.sessions() if x["src"] == sample.AGENT)
+        with open(os.path.join(d, "pentaiwatch.json"), "w") as fh:
+            json.dump({"allowlist": [sample.AGENT]}, fh)
+        res, paths = run([d], self.path("out"), workdir=self.dir)
+        det = res["detection"]
+        self.assertEqual(det["findings"], [])
+        self.assertEqual((det["never_flagged_sources"], det["never_flagged_sessions"]), (1, hidden))
+        self.assertEqual(res["settings_files"], [
+            {"kind": "settings", "file": os.path.join(d, "pentaiwatch.json"), "found_in_input": True},
+            {"kind": "network_map", "file": os.path.join(d, "network_map.csv"), "found_in_input": True}])
+        md = self.read(paths["report.md"])
+        self.assertIn(f"Left out of the scoring: {hidden:,} sessions from 1 outside source on the allowlist "
+                      "or in known_scanners.csv.", md)
+        self.assertIn(f"- Read from: settings {os.path.join(d, 'pentaiwatch.json')} (found among the input files); "
+                      f"network map {os.path.join(d, 'network_map.csv')} (found among the input files).", md)
+        self.assertIn(f"- Never flagged: {sample.AGENT}. That left out 1 outside source with {hidden:,} inbound "
+                      "sessions.", md)
+
+    def test_a_known_scanner_list_in_the_folder_is_counted_the_same_way(self):
+        d = self.folder()
+        with open(os.path.join(d, "known_scanners.csv"), "w") as fh:
+            fh.write(f"address,name\n{sample.SCANNER},Our scanner\n")
+        skipped = sum(1 for x in sample.sessions() if x["src"] == sample.SCANNER)
+        res, paths = run([d], self.path("out"), workdir=self.dir)
+        det = res["detection"]
+        self.assertEqual([f["source"] for f in det["findings"]], [sample.AGENT])
+        self.assertEqual((det["never_flagged_sources"], det["never_flagged_sessions"]), (1, skipped))
+        self.assertEqual(res["settings_files"][-1], {"kind": "known_scanners", "found_in_input": True,
+                                                     "file": os.path.join(d, "known_scanners.csv")})
+        self.assertIn(f"Left out of the scoring: {skipped:,} sessions from 1 outside source", self.read(paths["report.md"]))
+
+    def test_files_named_on_the_command_line_are_listed_as_named(self):
+        d = self.folder()
+        cfg, listed = self.path("mine.json"), self.path("ours.csv")
+        with open(cfg, "w") as fh:
+            json.dump({}, fh)
+        with open(listed, "w") as fh:
+            fh.write("address,name\n198.51.100.7,Our scanner\n")
+        res, paths = run([d], self.path("out"), config_path=cfg, known_scanners=listed, workdir=self.dir)
+        self.assertEqual(res["settings_files"], [
+            {"kind": "settings", "file": cfg, "found_in_input": False},
+            {"kind": "network_map", "file": os.path.join(d, "network_map.csv"), "found_in_input": True},
+            {"kind": "known_scanners", "file": listed, "found_in_input": False}])
+        md = self.read(paths["report.md"])
+        self.assertIn(f"- Read from: settings {cfg}; network map {os.path.join(d, 'network_map.csv')} "
+                      f"(found among the input files); known scanners {listed}.", md)
+        # nothing in the logs matched the list, so nothing is said to be left out
+        self.assertEqual((res["detection"]["never_flagged_sources"], res["detection"]["never_flagged_sessions"]), (0, 0))
+        self.assertNotIn("Left out of the scoring", md)
+        self.assertIn("- Never flagged: 198.51.100.7/32.\n", md)
+
+    def test_no_settings_file_says_the_defaults_apply(self):
+        d = self.path("plain")
+        os.makedirs(d)
+        kit.write_zeek_conn(os.path.join(d, "conn.log"), sample.sessions())
+        res, paths = run([d], self.path("out"), workdir=self.dir)
+        self.assertEqual(res["settings_files"], [])
+        self.assertIn("- Read from: no settings file, network map or known-scanner list. The defaults apply.",
+                      self.read(paths["report.md"]))
+
+    def test_two_settings_files_in_the_input_are_not_chosen_between_quietly(self):
+        d = self.folder()
+        os.makedirs(os.path.join(d, "site-b"))
+        first, second = os.path.join(d, "pentaiwatch.json"), os.path.join(d, "site-b", "pentaiwatch.json")
+        for path, allow in ((first, []), (second, [sample.AGENT])):
+            with open(path, "w") as fh:
+                json.dump({"allowlist": allow}, fh)
+        res, _ = run([d], self.path("out"), workdir=self.dir)
+        self.assertEqual([w for w in res["warnings"] if "settings files" in w],
+                         [f"2 settings files (pentaiwatch.json) were found among the input files. Only {first} was "
+                          f"used; ignored: {second}. Name the one to use with --config."])
+        self.assertEqual([f["source"] for f in res["detection"]["findings"]], [sample.AGENT])
+        # naming one settles it: no warning, and the named file is the one used
+        res, _ = run([d], self.path("out2"), config_path=second, workdir=self.dir)
+        self.assertEqual([w for w in res["warnings"] if "settings files" in w], [])
+        self.assertEqual(res["detection"]["findings"], [])
+        self.assertEqual(res["settings_files"][0], {"kind": "settings", "file": second, "found_in_input": False})
+
+    def test_when_the_lists_leave_nothing_to_score_the_warning_says_so(self):
+        # every outside session comes from an allowlisted source: the reason is the list, not the
+        # internal ranges, and the warning must not send the reader to the wrong setting
+        d = self.path("only")
+        os.makedirs(d)
+        agent = [x for x in sample.sessions() if x["src"] == sample.AGENT]
+        kit.write_zeek_conn(os.path.join(d, "conn.log"), agent)
+        cfg = Config()
+        cfg.allowlist = [sample.AGENT]
+        res, _ = run([d], self.path("out"), cfg, workdir=self.dir)
+        self.assertEqual(res["detection"]["inbound_sessions"], 0)
+        self.assertEqual(res["warnings"], [f"Nothing was scored: all {len(agent):,} session(s) from outside addresses "
+                                           "to internal hosts came from 1 source(s) on the allowlist or in "
+                                           "known_scanners.csv."])
+
     def test_two_runs_write_the_same_files(self):
         d = self.folder()
         texts = []

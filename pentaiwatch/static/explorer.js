@@ -39,8 +39,9 @@ const UNFLAGGED = OTHER_PACE ? 'Swept, not flagged' : 'Swept, did not narrow';
 const LOG_TEXT = {zeek: 'Zeek conn.log', paloalto: 'Palo Alto traffic log'};
 const START_TEXT = {zeek_ts: 'Zeek ts (always the session start)', start_field: 'firewall start-time field',
   end_minus_elapsed: 'firewall end time minus elapsed seconds', none: 'no start time available', '': 'not stated by the log reader'};
-const when = iso => iso ? String(iso).replace('T', ' ').replace('Z', ' UTC') : 'not seen';
-const clock = iso => iso ? String(iso).slice(11, 19) : '';
+// times arrive as text and go into the page's markup, so they are escaped like everything else
+const when = iso => iso ? esc(String(iso).replace('T', ' ').replace('Z', ' UTC')) : 'not seen';
+const clock = iso => iso ? esc(String(iso).slice(11, 19)) : '';
 const span = h => h >= 48 ? (h / 24).toFixed(1) + ' days' : h >= 1 ? h.toFixed(1) + ' hours' : Math.round(h * 60) + ' minutes';
 const pct = x => Math.round((x || 0) * 100) + '%';
 const listAnd = a => a.length > 1 ? a.slice(0, -1).join(', ') + ' and ' + a[a.length - 1] : a.join('');
@@ -895,7 +896,7 @@ function timingText(d) {
   if (!t || typeof t !== 'object') return 'Not evaluated.';
   if (t.status !== 'agentic') return `Not evaluated: ${esc(t.reason || 'no start times')}.`;
   return `<b>${fmt(t.bursts)}</b> short ${t.bursts === 1 ? 'burst' : 'bursts'}, each followed by a ${BAND} pause, of ${plural(t.bursts_all, 'burst')} in all. ` +
-    `Typical pause: <b>${t.typical_pause_seconds} seconds</b>.` +
+    `Typical pause: <b>${esc(t.typical_pause_seconds)} seconds</b>.` +
     (t.window_start ? ` Most in the window from ${when(t.window_start)}: ${fmt(t.window_bursts)}, with ${pct(t.window_pause_share)} of all that window's pauses in the band.` : '') +
     (t.sessions_timed < d.sessions ? ` Counted over the ${fmt(t.sessions_timed)} of its ${fmt(d.sessions)} sessions that have a start time.` : '');
 }

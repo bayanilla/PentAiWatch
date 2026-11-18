@@ -92,6 +92,7 @@ class Store:
         self.dir = tempfile.mkdtemp(prefix="pentaiwatch-work-", dir=base)
         self.budget = budget or resources.plan(memory_limit, self.dir)
         self.con = duckdb.connect(os.path.join(self.dir, "work.duckdb"))
+        no_downloads(self.con)
         tmp = os.path.join(self.dir, "duckdb_tmp")
         os.makedirs(tmp, exist_ok=True)
         self.con.execute(f"SET temp_directory = '{_q(tmp)}'")
@@ -331,6 +332,7 @@ class PartWriter:
     def _con(self):
         if self.con is None:
             self.con = duckdb.connect()
+            no_downloads(self.con)
             # one batch at a time: little memory, no threads competing with the other workers
             self.con.execute("SET threads = 1")
             self.con.execute("SET memory_limit = '512MiB'")
@@ -399,6 +401,14 @@ def _has_parquet(path: str) -> bool:
         return any(n.endswith(".parquet") for n in os.listdir(path))
     except OSError:
         return False
+
+
+def no_downloads(con) -> None:
+    """DuckDB's clients fetch an extension from the internet the first time a query needs one, and
+    load any extension already on this machine. PentAIWatch needs only what is built into DuckDB,
+    so both are switched off: a run never downloads code, and works with no network."""
+    con.execute("SET autoinstall_known_extensions = false")
+    con.execute("SET autoload_known_extensions = false")
 
 
 def _q(s: str) -> str:

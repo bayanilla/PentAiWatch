@@ -42,6 +42,26 @@ class LoadTests(unittest.TestCase):
         self.assertEqual(ds.sensors, ["zeek"])
         self.assertEqual((ds.duplicate_flows, ds.cross_sensor_duplicates), (0, 0))
 
+    def test_the_engine_downloads_and_auto_loads_no_extension(self):
+        # DuckDB's clients fetch an extension from the internet the first time a query needs one.
+        # A run must never download code, so every connection the package opens switches that off.
+        ds = self.load(kit.write_zeek_conn(self.path("conn.log"), sessions()))
+        got = ds.flow_con().execute("SELECT current_setting('autoinstall_known_extensions'), "
+                                    "current_setting('autoload_known_extensions')").fetchone()
+        self.assertEqual(got, (False, False))
+        package = os.path.dirname(os.path.abspath(netmap.__file__))
+        opened = 0
+        for name in sorted(os.listdir(package)):
+            if not name.endswith(".py"):
+                continue
+            with open(os.path.join(package, name), encoding="utf-8") as fh:
+                lines = fh.read().split("\n")
+            for i, line in enumerate(lines):
+                if "duckdb.connect(" in line:
+                    opened += 1
+                    self.assertIn("no_downloads(", lines[i + 1], f"{name}:{i + 1} opens DuckDB without it")
+        self.assertGreaterEqual(opened, 2)
+
     def test_gzip_log_reads_the_same(self):
         plain = self.load(kit.write_zeek_conn(self.path("conn.log"), sessions()))
         gz = self.load(kit.write_zeek_conn(self.path("conn.2026.log.gz"), sessions()))
