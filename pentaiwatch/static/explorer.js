@@ -288,6 +288,7 @@ function eachBeam(cb) {
   beamCount = n;
 }
 function frame(now) {
+  if (window.PWTimeline && window.PWTimeline.isOpen()) { t0 = now; requestAnimationFrame(frame); return; }   // the Timeline covers the map: rest
   const dt = Math.min(0.05, (now - t0) / 1000); t0 = now;
   const k = state.motion ? 1 - Math.pow(0.0015, dt) : 1;
   cam.x += (cam.tx - cam.x) * k; cam.y += (cam.ty - cam.y) * k; cam.z += (cam.tz - cam.z) * k;
@@ -886,6 +887,8 @@ $('search').addEventListener('keydown', e => {
 });
 
 const stat = (n, text) => `<div class="stat"><b>${n}</b><span>${esc(text)}</span></div>`;
+// the sources that narrowed have a Timeline (timeline3d.js), which needs the same WebGL the 3D view does
+const hasTimeline = ip => can3d && !!D.timelines && Object.prototype.hasOwnProperty.call(D.timelines, ip);
 // what the timing signal found for a flagged source (d.timing), in a sentence or two
 function timingText(d) {
   const t = d.timing;
@@ -915,6 +918,7 @@ function sourcePanel(n) {
     '<div class="stats">' + stat(fmt(d.services_probed), 'services tried') + stat(fmt(d.hosts_probed), `hosts, on ${plural(d.ports_probed, 'port')}`) +
     stat(pct(d.failed_share), 'of the sweep failed') + (f ? stat(fmt(d.services_total), `service${d.services_total === 1 ? '' : 's'} it came back to`)
       : stat(fmt(d.services_answered), `service${d.services_answered === 1 ? '' : 's'} answered`)) + '</div>';
+  if (hasTimeline(d.ip)) h += `<button type="button" class="tlgo" data-timeline="${esc(d.ip)}" title="Replay this source's sessions in the order they started, with its bursts and pauses">Replay it on the Timeline</button>`;
   h += `<h3>Sweep</h3><p>${when(d.probe_start)} to ${clock(d.probe_end)}. ${sweepLine(d)}.</p>`;
   const nets = [...n.nets].sort((a, b) => b.hosts - a.hosts || a.c.i - b.c.i);
   h += nets.slice(0, 12).map(b => `<div class="row go" tabindex="0" data-zoom="${b.c.i}"><span class="sw ${b.c.color ? '' : 'c-tried'}"${b.c.color ? ` style="background:${b.c.color}"` : ''}></span>` +
@@ -962,6 +966,8 @@ function renderPanel() {
   el.hidden = false; el.scrollTop = 0;
 }
 function panelAct(e) {
+  const tl = e.target.closest('[data-timeline]');
+  if (tl) { if (window.PWTimeline) window.PWTimeline.open(tl.dataset.timeline); return; }
   const row = e.target.closest('[data-src],[data-host],[data-zoom]'); if (!row) return;
   if (row.dataset.zoom != null) { const c = clusterAtIdx.get(Number(row.dataset.zoom)); if (c) zoomCluster(c); return; }
   select(row.dataset.src != null ? srcNodes[row.dataset.src] : hostNodes[row.dataset.host]);

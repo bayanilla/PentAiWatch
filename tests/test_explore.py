@@ -126,7 +126,8 @@ class SceneTests(Base):
         self.assertEqual(sorted(answered), [["10.10.1.10", 2], ["10.10.1.11", 1], ["10.10.1.12", 1], ["10.10.1.20", 2]])
 
     def test_the_report_links_to_the_map_and_to_each_flagged_source_on_it(self):
-        self.assertEqual(self.res["explorer"], {"file": "explorer.html", "sources_drawn": 2, "findings_drawn": 1})
+        self.assertEqual(self.res["explorer"], {"file": "explorer.html", "sources_drawn": 2, "findings_drawn": 1,
+                                                "timelines": [sample.AGENT]})
         md, page = self.read(self.paths["report.md"]), self.read(self.paths["report.html"])
         self.assertIn("[Open the Explorer](explorer.html)", md)
         self.assertIn(f"[Show this source on the map](explorer.html#source={sample.AGENT})", md)
@@ -190,7 +191,7 @@ class CutTests(Base):
         res, data, paths = self.run_logs(sample.client(random.Random(3)))
         self.assertEqual((data["sources"], data["hosts"], data["subnets"]), ([], [], []))
         self.assertEqual((data["counts"]["outside_sources"], data["counts"]["sweeping"]), (1, 0))
-        self.assertEqual(res["explorer"], {"file": "explorer.html", "sources_drawn": 0, "findings_drawn": 0})
+        self.assertEqual(res["explorer"], {"file": "explorer.html", "sources_drawn": 0, "findings_drawn": 0, "timelines": []})
         self.assertNotIn("explorer.html", self.read(paths["report.md"]))
         self.assertIn("<title>Explorer · PentAIWatch</title>", self.read(paths[explore.FILENAME]))
 
@@ -222,11 +223,13 @@ class PageTests(Base):
         self.assertEqual(re.findall(r"<script[^>]*\bsrc\s*=", page), [])
         self.assertEqual(re.findall(r"<(?:img|iframe|object|embed|video|audio|source)\b", page), [])
         self.assertEqual(re.findall(r"<link\b[^>]*>", page), ['<link rel="icon" href="data:,">'])
-        self.assertEqual(re.findall(r"@import|url\(\s*['\"]?(?!data:)", explore._read("explorer.css")), [])
+        for name in explore.STYLES:
+            self.assertEqual(re.findall(r"@import|url\(\s*['\"]?(?!data:)", explore._read(name)), [], name)
         # the page's own markup links only to the report next to it
         self.assertEqual(re.findall(r'href="([^"]*)"', explore._read("explorer.html")), ["report.html"])
-        for call in ("fetch(", "XMLHttpRequest", "WebSocket(", "sendBeacon", "importScripts"):
-            self.assertNotIn(call, explore._read("explorer.js"), call)
+        for name in ("explorer.js", "explorer3d.js", "timeline3d.js"):
+            for call in ("fetch(", "XMLHttpRequest", "WebSocket(", "sendBeacon", "importScripts", "EventSource", "window.open("):
+                self.assertNotIn(call, explore._read(name), f"{call} in {name}")
 
     def test_the_same_scene_gives_the_same_bytes(self):
         self.assertEqual(explore.html(self.SCENE, self.RES), explore.html(self.SCENE, self.RES))
@@ -250,8 +253,11 @@ class PageTests(Base):
                 explore._read("bad.js")
 
     def test_every_script_the_page_needs_is_in_the_package(self):
-        for name in explore.SCRIPTS + ("explorer.css", "explorer.html"):
+        for name in explore.SCRIPTS + explore.STYLES + ("explorer.html",):
             self.assertTrue(explore._read(name), name)
+        self.assertIn("timeline3d.js", explore.SCRIPTS)
+        # the Timeline starts after the map's controller, which it hands the other views back to
+        self.assertLess(explore.SCRIPTS.index("explorer.js"), explore.SCRIPTS.index("timeline3d.js"))
 
 
 class OtherPaceTests(Base):
@@ -279,7 +285,8 @@ class OtherPaceTests(Base):
         self.assertEqual(narrowed, {h: (1, 3) for h, _ in sample.NARROWED})
         # and the report links to the flagged source alone
         self.assertEqual(re.findall(r"explorer\.html#source=([0-9.]+)", self.read(paths["report.md"])), [sample.AGENT])
-        self.assertEqual(res["explorer"], {"file": "explorer.html", "sources_drawn": 3, "findings_drawn": 1})
+        self.assertEqual(res["explorer"], {"file": "explorer.html", "sources_drawn": 3, "findings_drawn": 1,
+                                           "timelines": [sample.AGENT, sample.FOLLOWER]})
 
 
 class ReportLinkTests(unittest.TestCase):

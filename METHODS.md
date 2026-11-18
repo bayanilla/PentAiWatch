@@ -210,6 +210,35 @@ de-duplicated sessions as the detection, so a session both logs recorded counts 
 Those four limits are constants in `pentaiwatch/explore.py`, not settings: they say what a
 browser draws comfortably, not what counts as agentic.
 
+## What the Timeline replays
+
+The Timeline is part of `explorer.html`. Like the map it scores nothing: which bursts count is
+worked out by the timing signal and travels to the page with the data.
+
+- **Which sources.** The drawn sources for which the narrowing signal fired, flagged ones first:
+  level 1, tier 0, and the sources that narrowed at another pace. A source that only swept has
+  none.
+- **Sessions.** All of the source's sessions in the lookback, each at its start time, measured
+  from its first. A session is one of three things. A *sweep attempt* is the source's first
+  session to a service, drawn by its outcome (failed, answered, other). A *return* is a later
+  session to a service the source narrowed onto, in the window its finding was built from. Any
+  other later session is drawn dim. A session whose only time is an end time is drawn at that
+  time and marked, and the page says how many there are.
+- **Bursts and pauses.** The rows of the timing signal's own burst table (see Signal 3): first
+  start, last start, sessions, and the pause that follows. Each row carries how the signal
+  counted it: a short burst followed by a pause in the band (one of the signal's cycles), a longer
+  burst followed by a pause in the band (the pause counts towards the share, the burst is not a
+  cycle), or neither. Bursts are cut from sessions that have a start time, so a tier 0 source
+  has sessions and no bursts.
+- **Where the signal fired.** The scoring windows in which signal 3 fired, joined where they
+  overlap. A window is two hours long by default, so the lit stretch can begin before the first
+  burst that counted.
+- **Cuts.** At most 12 sources. Beyond 20,000 sessions every n-th session of a source is drawn,
+  with n as small as fits, so the picture thins evenly from its first session to its last.
+  Beyond 20,000 bursts the earliest are drawn. Beyond 14 subnets the rest share one lane. The
+  counts on the page are of the whole, and where less is drawn the page says so. These limits are
+  constants in `pentaiwatch/explore.py` too.
+
 ## Data-quality rules
 
 - The DuckDB version is checked before any log is read. The detection is SQL, so a faulty

@@ -9,10 +9,10 @@ answered, and short bursts of activity separated by pauses while a model decides
 and scores all three signals: the sweep, the narrowing and the timing. A source where all three
 fire is reported as *Level 1. Agentic behaviour*. When the sweep and the narrowing fire but the
 sessions have no start time to check the pace by, it is reported one step lower, as *Tier 0. Sweep
-and narrow seen, timing unavailable*. It writes a report and an [Explorer](#explorer), a 3D map of
-what each source swept and came back to. The Explorer's Timeline and the threat-log confidence
-levels (2 and 3) arrive in the next pull requests. How each signal is worked out is in
-[METHODS.md](METHODS.md).
+and narrow seen, timing unavailable*. It writes a report and an [Explorer](#explorer): a 3D map of
+what each source swept and came back to, and a [Timeline](#timeline) that replays a source's
+sessions with its bursts and pauses. The threat-log confidence levels (2 and 3) arrive in the
+next pull request. How each signal is worked out is in [METHODS.md](METHODS.md).
 
 ## Run it
 
@@ -63,13 +63,45 @@ network connections, and neither do the pages it writes.
 
 The map opens in 3D on the Low view, slowly turning. Drag rotates, right-drag or Shift-drag pans,
 middle-drag moves the picture up or down and the wheel zooms. **Flat** gives the same picture
-from above with the sources in a row. **?** says what is on screen, and the search box finds a
-source, a host, a subnet or a port.
+from above with the sources in a row. **Timeline** replays one source (see below). **?** says
+what is on screen, and the search box finds a source, a host, a subnet or a port.
 
 A big run is cut to what a browser draws comfortably: 48 sources (flagged ones first, then those
 that narrowed, then the largest sweeps), 120 subnets and 2,000 hosts, chosen so that every host a
 flagged source kept coming back to is drawn. The counts stay whole, and the page says what is not
-drawn. A Timeline of a source's bursts and pauses is the next addition.
+drawn.
+
+### Timeline
+
+![The Timeline from the side: five minutes of one source's sessions, in short bursts with pauses of 22 to 35 seconds between them](screenshots/timeline.png)
+
+The map shows where a source went. The Timeline shows when. It replays one source's sessions in
+the order they started, so the rhythm the timing signal counted can be seen: a few sessions, a
+pause, a few sessions. It follows the Timeline of VulnScope MAX. Open it from the view switcher,
+from the button in a source's panel, or from a finding in the report
+(`explorer.html#timeline=203.0.113.50`). Every drawn source that swept and then narrowed has one,
+flagged or not, so an agent's pace can be put next to a scanner's.
+
+- **The tunnel.** Time runs left to right. The source rides the INTERNET band on top. Each lane
+  on the wall is a subnet it went to, with its hosts in address order.
+- **Lines.** Every session is a line from the source down to the host, at the moment the session
+  started: grey for a sweep attempt that nothing answered, blue for one that was answered, and the
+  tier's colour for a return to a service the source narrowed onto.
+- **Bars.** The bars above the band are the source's bursts, exactly as the timing signal cut
+  them. A bar in the tier's colour is a short burst followed by a pause inside the band (20 to 35
+  seconds unless your settings say otherwise), and a thin line crosses that pause. A grey bar is
+  any other burst: the sweep, a burst that is too long, or one followed by a longer or shorter
+  pause. The source's track is lit over the scoring windows in which the timing signal fired.
+- **Window.** *All* shows the whole campaign. The shorter windows, down to one minute, show single
+  bursts, with the number of sessions on each bar and the seconds on each pause. Drag the slider
+  to move the window, click a bar to zoom in on it, or press **Replay** to watch the sessions
+  arrive in order.
+
+The mouse works as on the map, and **Angled**, **Side**, **Down the tunnel** and **Above** set
+the camera. The first 12 sources that narrowed get a Timeline. A source with more than 20,000
+sessions is drawn thinned (every second session, or every third, and so on); its bursts are still
+counted from all of them, and the page says so. Sessions that have only an end time are drawn at
+that time and belong to no burst.
 
 To see it without logs of your own:
 
@@ -250,6 +282,7 @@ The Explorer page is put together from MAX's too:
 | `pentaiwatch/static/vf_data.js` | `vulnflow/static/vf_data.js` | Three messages reworded. It unpacks the data inside the page. |
 | `pentaiwatch/static/explorer.css` | `vulnflow/static/explorer.css` | MAX's Graphite theme only, as one flat set of rules. Styles of views this tool does not have are gone. |
 | `pentaiwatch/static/explorer.js`, `explorer.html` | `vulnflow/static/explorer.js`, `explorer.html` | Written for this tool, because what is drawn is different: sources, sweeps and the services narrowed onto. The subnet packing, camera, mouse and keyboard controls, label placement and the "?" note follow MAX's. |
+| `pentaiwatch/static/timeline3d.js`, `timeline3d.css` | `vulnflow/static/timeline3d.js`, `timeline3d.css` | Written for this tool, because what is replayed is different: one source's sessions, bursts and pauses instead of every flow and alert. The tunnel, the lanes, the window buttons and slider, the camera views and the mouse controls follow MAX's. |
 | `pentaiwatch/explore.py` | `vulnflow/explore.py` | The scene is this tool's own. How the data is packed into the page (gzip in base64, scripts inline) is MAX's. |
 | `scripts/smoke/explorer_smoke.py` | same name | The same approach, with this page's checks. |
 
@@ -268,9 +301,10 @@ code with the detection. No log files are committed.
 
 The Explorer page is checked in a real browser. `scripts/smoke/explorer_smoke.py` writes the
 sample logs five ways, analyzes them, opens each `explorer.html` in headless Chromium and walks
-the 3D view, every source, a host, the Flat view and the report's link to the map. It fails on any
-page error, on a body or a beam that is not drawn, and on a run with nothing to draw that does
-not say so:
+the 3D view, every source, a host, the Timeline, the Flat view and the report's links to the map
+and to the Timeline. It fails on any page error, on a body or a beam that is not drawn, on a
+Timeline window that does not hold the sessions, bursts and pauses the data has for it, and on a
+run with nothing to draw that does not say so:
 
     pip install playwright==1.63.0 && python -m playwright install chromium
     python scripts/smoke/explorer_smoke.py --samples smoke-work

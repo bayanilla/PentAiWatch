@@ -115,7 +115,9 @@ def run(paths: list[str], outdir: str, cfg: Config | None = None, *, config_path
                 "limitations": LIMITATIONS,
                 # the map written next to the report, and how much of the detection is drawn on it
                 "explorer": {"file": explore.FILENAME, "sources_drawn": len(scene["sources"]),
-                             "findings_drawn": sum(1 for s in scene["sources"] if s["flagged"])},
+                             "findings_drawn": sum(1 for s in scene["sources"] if s["flagged"]),
+                             # the sources whose sessions the page can replay on its Timeline
+                             "timelines": list(scene["timelines"])},
             }
             paths = write_all(res, outdir)
             paths[explore.FILENAME] = explore.write(scene, res, outdir)

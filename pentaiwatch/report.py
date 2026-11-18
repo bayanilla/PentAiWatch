@@ -78,9 +78,9 @@ def _timing_rows(f: dict, st: dict) -> list[str]:
             "window in the band |"]
 
 
-def _finding_lines(f: dict, st: dict, map_file: str = "") -> list[str]:
+def _finding_lines(f: dict, st: dict, map_file: str = "", timeline: bool = False) -> list[str]:
     """One finding. ``st``: the run's settings. ``map_file``: the Explorer page that draws this
-    source, when there is one."""
+    source, when there is one. ``timeline``: that page also has the source's Timeline."""
     methods = "; ".join(f"{START_METHOD_TEXT.get(k, k)} ({n:,} sessions)" for k, n in f["start_times"].items())
     lines = [f"### {f['source']}: {_tier(f)}. {f['label']}", "",
              "| | |", "|---|---|",
@@ -103,6 +103,8 @@ def _finding_lines(f: dict, st: dict, map_file: str = "") -> list[str]:
         lines.append(f"| Notes | {' '.join(f['notes'])} |")
     if map_file:
         lines.append(f"| Map | [Show this source on the map]({map_file}#source={f['source']}) |")
+    if map_file and timeline:
+        lines.append(f"| Timeline | [Replay its sessions in the order they started]({map_file}#timeline={f['source']}) |")
     lines += ["",
              "Services it narrowed to:", "",
              "| Service | Network | Completed sessions | First return |", "|---|---|---|---|"]
@@ -123,7 +125,8 @@ def markdown(res: dict) -> str:
              f"{_n(det['outside_sources'], 'outside source')} to internal hosts, between {_when(det['lookback_start'] or '')} and "
              f"{_when(det['lookback_end'] or '')}. All times are UTC.", "",
              "## Agentic activity", ""]
-    # the Explorer page written next to the report, if any: {"file", "sources_drawn", "findings_drawn"}
+    # the Explorer page written next to the report, if any: {"file", "sources_drawn", "findings_drawn",
+    # "timelines": the sources whose Timeline is in the page}
     ex = res.get("explorer") or {}
     map_file = ex.get("file", "") if ex.get("sources_drawn") else ""
     st = res["settings"]
@@ -139,7 +142,8 @@ def markdown(res: dict) -> str:
     if not found:
         lines += ["No outside source showed a sweep, then narrowing, at the pace of an agentic tool.", ""]
     for i, f in enumerate(found):
-        lines += _finding_lines(f, st, map_file if i < ex.get("findings_drawn", 0) else "")
+        lines += _finding_lines(f, st, map_file if i < ex.get("findings_drawn", 0) else "",
+                                f["source"] in (ex.get("timelines") or []))
     other_pace = det["narrowing_sources"] - len(found)
     if other_pace > 0:
         lines += [f"{_n(other_pace, 'other source')} swept and then narrowed, but not in short bursts and "
@@ -150,8 +154,10 @@ def markdown(res: dict) -> str:
         lines += [f"{_n(swept_only, 'other source')} swept many hosts or ports and did not narrow. That "
                   "looks like plain scanning and is not flagged.", ""]
     if map_file:
+        replay = (" Its Timeline replays a source's sessions in the order they started, with its bursts and "
+                  "pauses." if ex.get("timelines") else "")
         lines += [f"[Open the Explorer]({map_file}) to see every sweep on a map of your subnets, with the "
-                  "services each flagged source came back to.", ""]
+                  "services each flagged source came back to." + replay, ""]
     lines += ["### What the tiers and levels mean", "",
               "- **Level 1. Agentic behaviour.** Probing, narrowing and timing all fired: a sweep, a return to "
               f"what answered, and short bursts separated by {_band(st)} pauses.",
@@ -218,9 +224,10 @@ td:first-child{white-space:nowrap}code{background:#eceff3;padding:1px 4px;border
 td,th{border-color:#313948}th,code{background:#252d3a}h2{border-color:#313948}a{color:#7db4f5}}"""
 
 
-# The only links the report makes: to a page in its own folder, optionally at one source address.
-# Text taken from the logs (file names, notes) can never turn into a link to anywhere else.
-_LINK = re.compile(r"\[([^\[\]]+)\]\(([A-Za-z0-9_-]+\.html(?:#source=[0-9A-Fa-f:.]+)?)\)")
+# The only links the report makes: to a page in its own folder, optionally at one source address
+# (on the map, or on its Timeline). Text taken from the logs (file names, notes) can never turn into
+# a link to anywhere else.
+_LINK = re.compile(r"\[([^\[\]]+)\]\(([A-Za-z0-9_-]+\.html(?:#(?:source|timeline)=[0-9A-Fa-f:.]+)?)\)")
 
 
 def _inline(text: str) -> str:

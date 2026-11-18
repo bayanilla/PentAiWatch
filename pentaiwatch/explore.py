@@ -19,8 +19,14 @@ sources first), the ``MAX_SUBNETS`` subnets that matter most and ``MAX_HOSTS`` h
 counts in the page stay complete; it says how many subnets and hosts were tried and how many of
 them are drawn.
 
+A source that narrowed also gets a Timeline (``_timelines``): its sessions in order, each with the
+host it went to and what it was (a first attempt of the sweep, a return to a service it narrowed
+onto, anything else), and its bursts and pauses as the timing signal cut them (``pw_burst``). The
+page replays that in a tunnel with time along it (timeline3d.js).
+
 The renderer (explorer3d.js), the data unpacker (vf_data.js) and Three.js come from VulnScope
-MAX; see README.md. The controller (explorer.js) is written for this tool.
+MAX; see README.md. The controller (explorer.js) and the Timeline (timeline3d.js, after MAX's time
+tunnel) are written for this tool.
 """
 from __future__ import annotations
 
@@ -33,11 +39,12 @@ import os
 import re
 import tempfile
 import zlib
+from collections import Counter
 from dataclasses import asdict
 
 from . import __version__
 from .config import Config
-from .detect import Detection, log_sources
+from .detect import TIMED, Detection, log_sources
 from .netmap import NetMap
 
 FILENAME = "explorer.html"
@@ -45,6 +52,12 @@ MAX_SOURCES = 48        # outside sources on the arc
 MAX_SUBNETS = 120       # subnets drawn as rings
 MAX_HOSTS = 2000        # hosts drawn as dots
 MAX_SERVICES = 200      # narrowed services listed per source
+MAX_TIMELINES = 12              # sources given a Timeline: those that narrowed, flagged ones first
+MAX_TIMELINE_SESSIONS = 20000   # sessions drawn on one source's Timeline (evenly thinned beyond that)
+MAX_TIMELINE_BURSTS = 20000     # bursts drawn on one source's Timeline (the earliest beyond that)
+TIMELINE_LANES = 14             # subnets given a lane of their own on a Timeline; the rest share one
+# What a session on a Timeline is. Add UNTIMED when its time is an END time (it has no start time).
+SWEEP_FAILED, SWEEP_ANSWERED, SWEEP_OTHER, RETURN, LATER, UNTIMED = 0, 1, 2, 3, 4, 8
 SWEEP_ONLY = "Swept, did not narrow"
 OTHER_PACE = "Swept and narrowed, not at an agent's pace"
 VIEW_TABLES = ("pw_view_src", "pw_view_sh", "pw_view_nsvc", "pw_view_host", "pw_view_h", "pw_view_net",
@@ -68,7 +81,7 @@ def subnet_of(ip: str) -> str:
 
 def empty() -> dict:
     """The scene of a run in which no source swept (or nothing could be scored)."""
-    return {"window": [None, None], "subnets": [], "hosts": [], "sources": [],
+    return {"window": [None, None], "subnets": [], "hosts": [], "sources": [], "timelines": {},
             "counts": {"inbound_sessions": 0, "outside_sources": 0, "sweeping": 0, "narrowed": 0, "flagged": 0,
                        "sources_drawn": 0, "hosts_tried": 0, "hosts_drawn": 0, "subnets_tried": 0,
                        "subnets_drawn": 0}}
@@ -76,6 +89,101 @@ def empty() -> dict:
 
 def _iso(ts) -> str:
     return ts.replace(tzinfo=None).isoformat(timespec="seconds") + "Z" if ts is not None else ""
+
+
+def _ip_order(ip: str) -> tuple:
+    """Sort key that puts addresses in numeric order (10.0.0.9 before 10.0.0.10)."""
+    try:
+        addr = ipaddress.ip_address(ip)
+        return (addr.version, int(addr), ip)
+    except ValueError:
+        return (9, 0, ip)
+
+
+def _timelines(con, cfg: Config, nm: NetMap) -> dict[str, dict]:
+    """What the Timeline replays, for the drawn sources that narrowed (flagged ones first).
+
+    Per source, with every time in milliseconds after its first session (``t0``):
+      sessions  [ms, index into hosts, kind] in time order. kind: SWEEP_FAILED, SWEEP_ANSWERED or
+                SWEEP_OTHER for the first attempt on a service, by its outcome; RETURN for a later
+                session to a service the source narrowed onto; LATER for any other later session.
+                UNTIMED is added when the time is an end time. Beyond MAX_TIMELINE_SESSIONS every
+                n-th session is kept, so the picture thins evenly and never loses its end.
+      hosts     [address, index into lanes], in address order inside each lane.
+      lanes     [subnet, its name in network_map.csv, hosts]: the TIMELINE_LANES subnets with the
+                most hosts the source went to, then one lane for all the others.
+      bursts    [first start, last start, sessions, the pause that follows in seconds or None, how
+                it counts], exactly as the timing signal cut them. How it counts: 2 when it is one
+                of the signal's cycles (a short burst, then a pause in the band), 1 when only its
+                pause is in the band, else 0. Empty for a source with no start times.
+      marks     where its sweep starts and ends and where narrowing starts.
+      fired     the scoring windows in which the timing signal fired: [start, such bursts, all
+                pauses, pauses in the band]."""
+    out: dict[str, dict] = {}
+    step_ms = cfg.window_hours * 3600 * 1000 / 2
+    for src, k in con.execute("SELECT src_ip, k FROM pw_view_src WHERE narrowed ORDER BY pos LIMIT ?",
+                              [MAX_TIMELINES]).fetchall():
+        first, t0, t1, total = con.execute(
+            "SELECT min(start_ts), epoch_ms(min(start_ts)), epoch_ms(max(start_ts)), count(*) "
+            "FROM pw_sessions WHERE src_ip = ?", [src]).fetchone()
+        every = max(1, -(-total // MAX_TIMELINE_SESSIONS))
+        rows = con.execute("""
+            WITH mine AS (
+                SELECT s.start_ts, s.seq, s.dst_ip, epoch_ms(s.start_ts) - $t0 AS ms,
+                       CASE WHEN s.seq = v.first_seq
+                            THEN CASE s.outcome WHEN 'failed' THEN $failed WHEN 'answered' THEN $answered
+                                                ELSE $other END
+                            WHEN n.dst_ip IS NOT NULL THEN $return ELSE $later END
+                       + CASE WHEN list_contains(CAST($timed AS VARCHAR[]), s.start_method) THEN 0
+                              ELSE $untimed END AS kind
+                FROM pw_sessions s
+                JOIN pw_svc v ON v.src_ip = s.src_ip AND v.dst_ip = s.dst_ip AND v.proto = s.proto
+                             AND v.dst_port IS NOT DISTINCT FROM s.dst_port
+                LEFT JOIN pw_narrow_svc n ON n.src_ip = s.src_ip AND n.k = $k AND n.dst_ip = s.dst_ip
+                             AND n.proto = s.proto AND n.dst_port IS NOT DISTINCT FROM s.dst_port
+                WHERE s.src_ip = $src)
+            SELECT ms, dst_ip, kind FROM mine
+            QUALIFY (row_number() OVER (ORDER BY start_ts, seq) - 1) % $every = 0
+            ORDER BY start_ts, seq""",
+                           {"src": src, "k": k, "t0": t0, "every": every, "timed": list(TIMED),
+                            "failed": SWEEP_FAILED, "answered": SWEEP_ANSWERED, "other": SWEEP_OTHER,
+                            "return": RETURN, "later": LATER, "untimed": UNTIMED}).fetchall()
+        subnet = {ip: subnet_of(ip) for ip in {r[1] for r in rows}}
+        per_subnet = Counter(subnet.values())
+        own = sorted(sorted(per_subnet, key=lambda s: (-per_subnet[s], s))[:TIMELINE_LANES])
+        lane_of = {s: i for i, s in enumerate(own)}
+        lanes = [[s, nm.name(next(ip for ip in sorted(subnet, key=_ip_order) if subnet[ip] == s)), per_subnet[s]]
+                 for s in own]
+        if len(per_subnet) > len(own):
+            lanes.append(["*", "other subnets", sum(n for s, n in per_subnet.items() if s not in lane_of)])
+        hosts = sorted(subnet, key=lambda ip: (lane_of.get(subnet[ip], len(own)), _ip_order(ip)))
+        at = {ip: i for i, ip in enumerate(hosts)}
+        bursts_total = con.execute("SELECT count(*) FROM pw_burst WHERE src_ip = ?", [src]).fetchone()[0]
+        bursts = con.execute("""
+            SELECT epoch_ms(first_ts) - $t0, epoch_ms(last_ts) - $t0, sessions, round(pause, 3),
+                   coalesce(CAST(pause BETWEEN $lo AND $hi AS INTEGER), 0)
+                   + coalesce(CAST(sessions <= $max_burst AND pause BETWEEN $lo AND $hi AS INTEGER), 0)
+            FROM pw_burst WHERE src_ip = $src ORDER BY burst LIMIT $limit""",
+                             {"src": src, "t0": t0, "limit": MAX_TIMELINE_BURSTS,
+                              "lo": float(cfg.timing.pause_min_seconds), "hi": float(cfg.timing.pause_max_seconds),
+                              "max_burst": int(cfg.timing.max_burst_sessions)}).fetchall()
+        marks = con.execute("""
+            SELECT epoch_ms(p.probe_start) - $t0, epoch_ms(p.probe_end) - $t0, epoch_ms(w.narrowing_start) - $t0
+            FROM pw_probe p JOIN pw_narrow w USING (src_ip, k) WHERE p.src_ip = $src AND p.k = $k""",
+                            {"src": src, "k": k, "t0": t0}).fetchone()
+        fired = con.execute("SELECT k, cycles, pauses, in_band FROM pw_timing WHERE src_ip = ? ORDER BY k",
+                            [src]).fetchall()
+        out[src] = {
+            "t0": _iso(first), "t0_ms": int(t0), "seconds": round((t1 - t0) / 1000, 3),
+            "sessions_total": int(total), "every": int(every),
+            "lanes": lanes, "hosts": [[ip, lane_of.get(subnet[ip], len(own))] for ip in hosts],
+            "sessions": [[int(ms), at[ip], int(kind)] for ms, ip, kind in rows],
+            "bursts": [[int(a), int(b), int(n), None if pause is None else float(pause), int(how)]
+                       for a, b, n, pause, how in bursts],
+            "bursts_total": int(bursts_total),
+            "marks": {"probe_start": int(marks[0]), "probe_end": int(marks[1]), "narrowing_start": int(marks[2])},
+            "fired": [[int(w * step_ms - t0), int(c), int(p), int(b)] for w, c, p, b in fired]}
+    return out
 
 
 def _load(con, table: str, columns: dict[str, str], rows) -> None:
@@ -115,6 +223,7 @@ def collect(con, cfg: Config, detection: Detection) -> dict:
         out["counts"].update(_draw(con, out, nm))
         out["sources"] = _sources(con, cfg, findings)
         out["counts"]["sources_drawn"] = len(out["sources"])
+        out["timelines"] = _timelines(con, cfg, nm)
     finally:
         for table in VIEW_TABLES:
             con.execute(f"DROP TABLE IF EXISTS {table}")
@@ -279,8 +388,9 @@ def _sources(con, cfg: Config, findings: dict) -> list[dict]:
 
 # -- the page -------------------------------------------------------------------------------
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-# In page order: the data unpacker, Three.js, the renderer, the controller.
-SCRIPTS = ("vf_data.js", "vendor/three.min.js", "explorer3d.js", "explorer.js")
+# In page order: the data unpacker, Three.js, the map's renderer and controller, the Timeline.
+SCRIPTS = ("vf_data.js", "vendor/three.min.js", "explorer3d.js", "explorer.js", "timeline3d.js")
+STYLES = ("explorer.css", "timeline3d.css")
 DATA_TAG = '<script id="vf-data" type="application/octet-stream" data-encoding="gzip-base64">'
 _DATA = re.compile(re.escape(DATA_TAG) + r"(.*?)</script>", re.S)
 MAX_DATA = 1024 ** 3            # unpacked bytes read_data accepts, the same limit the page has
@@ -325,6 +435,7 @@ def page_data(scene: dict, res: dict) -> dict:
                                                                   "hosts": MAX_HOSTS, "services": MAX_SERVICES},
             # the timing settings, so the page can say what "an agent's pace" meant in this run
             "timing": (res.get("settings") or {}).get("timing") or {},
+            "window_hours": (res.get("settings") or {}).get("window_hours") or 2,
             **scene}
 
 
@@ -340,7 +451,7 @@ def write_html(fh, scene: dict, res: dict) -> None:
     fh.write('<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
              '<meta name="viewport" content="width=device-width,initial-scale=1">'
              '<title>Explorer · PentAIWatch</title><link rel="icon" href="data:,">'
-             "<style>" + _read("explorer.css") + "</style></head><body>" + _read("explorer.html"))
+             "<style>" + "".join(_read(name) for name in STYLES) + "</style></head><body>" + _read("explorer.html"))
     fh.write(DATA_TAG)
     write_data(fh, page_data(scene, res))
     fh.write("</script>" + "".join("<script>" + _read(name) + "</script>" for name in SCRIPTS)

@@ -21,6 +21,9 @@ What is checked:
 4. The synthetic agentic source the unit tests use, added to the capture, IS flagged, at level 1:
    from Zeek alone, from a Palo Alto form of the same sessions alone, and from both. Its bursts
    and pauses match the plain reader's too. With both logs every session is counted once.
+5. The Explorer's Timeline of the nmap run and of the agentic source holds the sessions and the
+   bursts the plain reader counts. The nmap run has more sessions than a Timeline draws, so every
+   second one is drawn and all are counted.
 
 The Palo Alto form is written by to_paloalto.py from the Zeek log. It is not a real firewall log,
 so it checks that the two readers agree on the same sessions, not that the Palo Alto defaults fit
@@ -159,7 +162,8 @@ def ground_truth(conn_log: str) -> dict:
                       and s["failed"] >= MIN_FAILED * s["services"])
     pace = rhythm(nmap)
     return {"sessions": sessions, "inbound_sessions": inbound, "outside_sources": len(per_source),
-            "sweeping_sources": len(sweeping), "nmap_pace": {k: pace[k] for k in EXPECTED["nmap_pace"]}}
+            "sweeping_sources": len(sweeping), "nmap_pace": {k: pace[k] for k in EXPECTED["nmap_pace"]},
+            "nmap_timeline": timeline_of(pace)}
 
 
 def analyze(name: str, inputs: list[str], work: str) -> dict:
@@ -195,6 +199,25 @@ def drawn_pace(res: dict, source: str) -> dict | None:
             return {"sessions": s["sessions"], "bursts": s["pace"]["bursts_all"], "pauses": s["pace"]["pauses"],
                     "pauses_in_band": s["pace"]["pauses_in_band"]}
     return None
+
+
+def drawn_timeline(res: dict, source: str) -> dict | None:
+    """What the Explorer page's Timeline holds for a source: its sessions, how many of them are
+    drawn, its bursts, the pauses in the band, and the bursts the timing signal counted."""
+    with open(res["explorer_page"], encoding="utf-8") as fh:
+        t = explore.read_data(fh.read()).get("timelines", {}).get(source)
+    if not t:
+        return None
+    return {"sessions": t["sessions_total"], "drawn": len(t["sessions"]), "bursts": t["bursts_total"],
+            "pauses_in_band": sum(1 for b in t["bursts"] if b[4] >= 1),
+            "paced_bursts": sum(1 for b in t["bursts"] if b[4] == 2)}
+
+
+def timeline_of(pace: dict) -> dict:
+    """The same, as the plain reader's bursts and pauses say it should be."""
+    every = -(-pace["sessions"] // explore.MAX_TIMELINE_SESSIONS)
+    return {"sessions": pace["sessions"], "drawn": -(-pace["sessions"] // every), "bursts": pace["bursts"],
+            "pauses_in_band": pace["pauses_in_band"], "paced_bursts": pace["paced_bursts"]}
 
 
 def main(data: str, work: str) -> int:
@@ -233,6 +256,8 @@ def main(data: str, work: str) -> int:
                    got["zeek_tsv"]["narrowing_sources"]))
     checks.append(("ground truth: the nmap run's bursts and pauses", EXPECTED["nmap_pace"], truth["nmap_pace"]))
     checks.append(("Zeek: the nmap run's bursts and pauses", truth["nmap_pace"], drawn_pace(runs["zeek_tsv"], NMAP)))
+    checks.append(("Zeek: the nmap run's Timeline (every second session drawn, all counted)", truth["nmap_timeline"],
+                   drawn_timeline(runs["zeek_tsv"], NMAP)))
     checks.append(("Zeek: flagged in the capture itself", EXPECTED["flagged"], got["zeek_tsv"]["flagged"]))
     for name in ("zeek_with_agent", "paloalto_with_agent", "both_with_agent"):
         checks.append((f"{name}: flagged, with the level", EXPECTED["with_agent_flagged"], got[name]["flagged"]))
@@ -245,6 +270,7 @@ def main(data: str, work: str) -> int:
     checks.append(("zeek_with_agent: the agent's short bursts with a pause in the band, all its bursts, typical pause",
                    [plain["paced_bursts"], plain["bursts"], plain["typical_pause"]],
                    [timing.get("bursts"), timing.get("bursts_all"), timing.get("typical_pause_seconds")]))
+    checks.append(("zeek_with_agent: the agent's Timeline", timeline_of(plain), drawn_timeline(runs["zeek_with_agent"], sample.AGENT)))
     with_agent = EXPECTED["sessions"] + len(agent)
     checks.append(("zeek_with_agent: sessions", with_agent, got["zeek_with_agent"]["sessions"]))
     fewer = with_agent - EXPECTED["paloalto_sessions_fewer"]
