@@ -1,0 +1,2 @@
+# The one runtime dependency. 1.1 lacks a read_csv option the session store uses.
+duckdb>=1.2,<2
