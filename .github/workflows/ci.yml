@@ -1,11 +1,16 @@
-# Runs on every pull request and every push to main. Three jobs run side by side:
+# Runs on every pull request and every push to main. Four jobs run side by side:
 #   hygiene   scripts/check_repo.py: no local branding, captures, executables, keys or files over 5 MB
 #   lint      ruff (unused/undefined names, syntax) and mypy checked against Python 3.10 (pyproject.toml)
 #   tests     the unit test suite on Python 3.10 (oldest supported) and 3.13; the 3.13 run measures
 #             coverage and shows it on the run's summary page. A third run uses the OLDEST DuckDB
 #             that requirements.txt allows: the detection is SQL, and a different engine version
 #             can change its answers without any error (1.3.0 did), so both ends are tested
-# Nothing here needs secrets, an API key or the network beyond installing the tools.
+#   realdata  scripts/realdata/check.py: runs the tool on Brim's public WRCCDC 2018 Zeek logs (a
+#             million real sessions) and compares its counts with a separate plain reading of the
+#             log; nothing in that capture may be flagged from Zeek, and the agentic source the
+#             tests use, added to it, must be, from Zeek, from a Palo Alto form and from both
+# Nothing here needs secrets or an API key. The Brim files are downloaded on the CI machine, pinned
+# to an exact commit and SHA-256 checked; they are never committed.
 name: CI
 
 on:
@@ -83,3 +88,34 @@ jobs:
           coverage combine
           coverage report
           { echo "### Test coverage (pentaiwatch/)"; echo; coverage report --format=markdown; } >> "$GITHUB_STEP_SUMMARY"
+
+  realdata:
+    name: Real capture (Brim WRCCDC)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Cache the Brim files (verified again after restore)
+        uses: actions/cache@v4
+        with:
+          path: brim-data
+          key: brim-${{ hashFiles('scripts/realdata/brim_manifest.txt') }}
+      - name: Download (pinned, SHA-256 checked)
+        run: python scripts/realdata/fetch.py brim-data
+      - name: Analyze and compare
+        run: python scripts/realdata/check.py brim-data realdata-work
+      - name: Keep the results when a check fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: realdata-results
+          path: realdata-work/runs/*/results.json
+          retention-days: 7

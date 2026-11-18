@@ -198,6 +198,37 @@ Alto syslog lines. No log files are committed.
 
 CI runs the same checks on every pull request.
 
+### Checked on a real capture
+
+CI also runs the tool on a real capture: Brim's public WRCCDC 2018 Zeek logs, a million sessions
+from 21 minutes of a cyber defence competition, recorded years before agentic tools existed. The
+files are downloaded on the CI machine (pinned to an exact commit, SHA-256 checked) and are never
+committed.
+
+    python scripts/realdata/fetch.py brim-data
+    python scripts/realdata/check.py brim-data realdata-work
+
+It checks that the counts match a separate plain reading of the log, that nothing in the capture
+is flagged from the Zeek log, and that the agentic source the unit tests use, added to the
+capture, is flagged from Zeek alone, from a Palo Alto form of the same sessions, and from both
+with every session counted once. The Palo Alto form is written from the Zeek log by
+`scripts/realdata/to_paloalto.py`; it is not a real firewall log.
+
+What the capture shows about the signals:
+
+- 14 outside sources sweep hard enough to fire the probing signal. None narrows, so none is
+  flagged. Most rescan the same range again and again: after their first return, at most 5% of
+  their sessions go to services that answered. Without the `min_focus_share` condition, 13 of the
+  14 would be flagged.
+- The Palo Alto form of the same sessions flags one more source: an nmap run (ping sweep, port
+  scan, then service detection on what answered). Its unanswered pings are failed probes under
+  the firewall rule and no outcome at all under the Zeek rule, because Zeek gives every ICMP
+  record the state `OTH`. Sweep-then-narrow is what service detection looks like, which is why
+  tier 0 alone is weak evidence and the timing signal matters.
+- A refused connection counts as failed in Zeek (`REJ`) and as answered on the firewall (a reset
+  came back). In this capture, where nothing drops the sweeps, that leaves only 4 of the sweeping
+  sources recognised in the Palo Alto form. See METHODS.md.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

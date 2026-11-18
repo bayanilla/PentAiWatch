@@ -1,0 +1,6 @@
+# Brim public sample data used by the CI check on a real capture. Pinned to an exact commit; every
+# file is checked against its SHA-256 before use. Files are downloaded on the CI machine only and
+# are never committed. Format: sha256  folder/file  url
+# zed-sample-data (CC BY-SA 4.0, WRCCDC 2018) 8da0758e1ee1a8f94895d640a7646fd2c27ca803. The same pins as VulnScope MAX's scripts/accuracy/brim_manifest.txt.
+f79145bd47712e14e3d408b682726f6f51bb8476a66c6362ca206b356dc2cd00  wrccdc_tsv/conn.log.gz  https://raw.githubusercontent.com/brimdata/zed-sample-data/8da0758e1ee1a8f94895d640a7646fd2c27ca803/zeek-default/conn.log.gz
+464062acc423391ddacaddb1ed038a7655af6be17e62ea87b2f7b946f2a8eee0  wrccdc_json/conn.json.gz  https://raw.githubusercontent.com/brimdata/zed-sample-data/8da0758e1ee1a8f94895d640a7646fd2c27ca803/zeek-json/conn.json.gz
