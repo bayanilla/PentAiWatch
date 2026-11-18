@@ -8,6 +8,10 @@
            the same sweep twelve hours later. It never narrows.
 * CLIENT   an ordinary outside client of one public web service.
 
+``other_pace`` gives a fourth source for the tests that want one: it sweeps and narrows exactly as
+the agent does, but never waits 20 to 35 seconds between bursts (a scanner following up on what it
+found, or a person at work).
+
 Everything is generated from a fixed seed, so every run gives the same sessions.
 """
 from __future__ import annotations
@@ -18,6 +22,7 @@ from tests import kit
 
 T0 = 1_790_000_000.0                      # start of the sample (epoch seconds, UTC)
 AGENT, SCANNER, CLIENT = "203.0.113.50", "198.51.100.77", "192.0.2.10"
+FOLLOWER = "203.0.113.90"                 # sweeps and narrows at a steady pace (see other_pace)
 HOSTS = [f"10.10.1.{i}" for i in range(10, 30)] + [f"10.10.2.{i}" for i in range(10, 30)]
 AGENT_PORTS = [22, 80, 443, 3389, 4443, 8080, 8443, 9443, 10443, 11434]
 # What is really listening: VPN portal, firewall admin, AI gateway, public web, and a mail relay.
@@ -27,15 +32,17 @@ NARROWED = [("10.10.1.10", 443), ("10.10.1.11", 8443), ("10.10.1.12", 11434)]
 
 
 def agent(rng: random.Random, hours: float = 4.0, pause_at: float | None = None,
-          pause_hours: float = 1.0, refused: float = 0.04) -> list[dict]:
+          pause_hours: float = 1.0, refused: float = 0.04, think: tuple[float, float] = (20, 35),
+          src: str = AGENT) -> list[dict]:
     """The agentic source. ``pause_at`` (hours into the narrowing) inserts a ``pause_hours`` gap.
-    ``refused`` is the share of closed ports that refuse the connection instead of staying silent."""
+    ``refused`` is the share of closed ports that refuse the connection instead of staying silent.
+    ``think`` is how long it waits between bursts, in seconds; ``src`` is its address."""
     out, t = [], T0 + 600
     targets = [(h, p) for h in HOSTS[:30] for p in AGENT_PORTS]
     rng.shuffle(targets)
     for host, port in targets:                                  # the sweep: about one a second
         state = "SF" if (host, port) in OPEN else "REJ" if rng.random() < refused else "S0"
-        out.append(kit.session(t, AGENT, host, port, state))
+        out.append(kit.session(t, src, host, port, state))
         t += rng.uniform(0.6, 1.4)
     t += 120                                                    # the model reads the results
     end, paused = t + hours * 3600, False
@@ -46,10 +53,17 @@ def agent(rng: random.Random, hours: float = 4.0, pause_at: float | None = None,
             paused = True
         host, port = rng.choice(NARROWED)
         for _ in range(rng.randint(1, 14)):                     # a burst
-            out.append(kit.session(t, AGENT, host, port, rng.choice(["SF", "SF", "SF", "RSTO"])))
+            out.append(kit.session(t, src, host, port, rng.choice(["SF", "SF", "SF", "RSTO"])))
             t += rng.uniform(0.7, 1.3)
-        t += rng.uniform(20, 35)                                # think time
+        t += rng.uniform(*think)                                # think time
     return out
+
+
+def other_pace(seed: int = 11, think: tuple[float, float] = (3, 6), src: str = FOLLOWER,
+               hours: float = 1.0) -> list[dict]:
+    """A source that sweeps and narrows like the agent but waits ``think`` seconds between bursts:
+    3 to 6 by default, so once it has narrowed its sessions never pause long enough to end a burst."""
+    return agent(random.Random(seed), hours=hours, think=think, src=src)
 
 
 def scanner(rng: random.Random) -> list[dict]:

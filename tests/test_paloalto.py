@@ -5,12 +5,13 @@ import json
 import os
 import tempfile
 import unittest
+from dataclasses import asdict
 from datetime import datetime, timezone
 
 import pentaiwatch.detect as detector
-from pentaiwatch import config
+from pentaiwatch import config, report
 from pentaiwatch.config import Config
-from pentaiwatch.detect import TIER_0, detect
+from pentaiwatch.detect import LEVEL_1, TIER_0, detect
 from pentaiwatch.errors import MissingField, UserError
 from pentaiwatch.load import load
 from pentaiwatch.pipeline import run
@@ -68,7 +69,7 @@ class ThreeWaysTests(Base):
         both = self.detect(self.zeek(self.sessions), self.firewall(self.sessions))
         for got in (zeek, firewall, both):
             self.assertEqual([f.source for f in got.findings], [sample.AGENT])
-            self.assertEqual((got.findings[0].level, got.findings[0].label), (0, TIER_0))
+            self.assertEqual((got.findings[0].level, got.findings[0].label), (1, LEVEL_1))
         self.assertEqual(_summary(zeek.findings[0]), _summary(firewall.findings[0]))
         self.assertEqual(_summary(zeek.findings[0]), _summary(both.findings[0]))
         self.assertEqual({(s.host, s.port) for s in both.findings[0].services}, set(sample.NARROWED))
@@ -126,6 +127,10 @@ class StartTimeTests(Base):
         f = got.findings[0]
         self.assertEqual((f.source, f.start_times), (sample.AGENT, {START_END_MINUS_ELAPSED: f.sessions}))
         self.assertEqual(got.warnings, [])
+        # flagged at level 1, the same as with a start field: whole seconds are precise enough
+        with_start = self.detect(self.firewall(self.sessions)).findings[0]
+        self.assertEqual((f.level, f.label), (1, LEVEL_1))
+        self.assertEqual((with_start.level, with_start.timing), (1, f.timing))
 
     def test_neither_start_nor_elapsed_is_still_reported_with_a_warning(self):
         ds = self.load(self.firewall(self.sessions, start=False))
@@ -136,10 +141,49 @@ class StartTimeTests(Base):
         f = got.findings[0]
         self.assertEqual((f.source, f.level, f.label), (sample.AGENT, 0, TIER_0))
         self.assertEqual(f.start_times, {START_NONE: f.sessions})
+        # timing is never worked out from end times: nothing was timed, and the finding says why
+        t = f.timing
+        self.assertEqual((t.status, t.reason), ("unavailable", "none of its sessions has a start time"))
+        self.assertEqual((t.sessions_timed, t.bursts, t.bursts_all, t.typical_pause_seconds, t.window_start),
+                         (0, 0, 0, None, ""))
         self.assertEqual(len(got.warnings), 1)                                   # said once, not per session
         self.assertIn("neither a start time nor an elapsed time", got.warnings[0])
         self.assertIn("never used for timing", got.warnings[0])
         self.assertIn("had neither a start time nor an elapsed time", " ".join(ds.stats[0].notes))
+
+    def test_export_that_is_only_partly_timed_cannot_rule_a_source_out(self):
+        # one export with start times holds the sweep and the first minute of what followed; a
+        # second export, with no start and no elapsed time, holds the hours of bursts and pauses
+        ss = sample.sessions()
+        cut = min(s["ts"] for s in ss if s["src"] == sample.AGENT) + 480
+        early = self.firewall([s for s in ss if s["ts"] < cut])
+        late = self.firewall([s for s in ss if s["ts"] >= cut], start=False)
+        f = self.detect(early, late).findings[0]
+        self.assertEqual((f.source, f.level, f.label), (sample.AGENT, 0, TIER_0))
+        self.assertEqual(f.timing.status, "unavailable")
+        self.assertEqual(f.timing.reason, f"only {f.timing.sessions_timed:,} of its {f.sessions:,} sessions have a "
+                                          "start time, and those do not show the bursts and pauses")
+        self.assertLess(f.timing.sessions_timed, 0.9 * f.sessions)
+        # how much of a source must be timed before timing may rule it out is a setting
+        cfg = Config()
+        cfg.timing.min_timed_share = 0.05
+        self.assertEqual(self.detect(early, late, cfg=cfg).findings, [])
+
+    def test_bursts_seen_in_the_timed_part_of_an_export_are_enough(self):
+        # the same two exports, cut two hours in: the part with start times holds two hours of bursts
+        ss = sample.sessions()
+        cut = min(s["ts"] for s in ss if s["src"] == sample.AGENT) + 7200
+        early = self.firewall([s for s in ss if s["ts"] < cut])
+        late = self.firewall([s for s in ss if s["ts"] >= cut], start=False)
+        f = self.detect(early, late).findings[0]
+        self.assertEqual((f.source, f.level, f.timing.status), (sample.AGENT, 1, "agentic"))
+        timed = sum(1 for s in ss if s["src"] == sample.AGENT and s["ts"] < cut)
+        self.assertEqual((f.timing.sessions_timed, f.start_times),
+                         (timed, {"none": f.sessions - timed, "start_field": timed}))
+        self.assertLess(timed, 0.9 * f.sessions)
+        # and the report says the bursts were counted over those sessions only
+        text = "\n".join(report._finding_lines(asdict(f), Config().settings()))
+        self.assertIn(f", counted over the {timed:,} of its {f.sessions:,} sessions that have a start time |", text)
 
     def test_start_worked_out_from_elapsed_still_matches_zeek(self):
         ds = self.load(self.zeek(self.sessions), self.firewall(self.sessions, start=False, elapsed=True))

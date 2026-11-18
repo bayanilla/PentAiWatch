@@ -66,11 +66,14 @@ class SceneTests(Base):
 
     def test_sources_drawn_are_those_that_swept_flagged_first(self):
         self.assertEqual([(s["ip"], s["flagged"], s["level"], s["label"]) for s in self.data["sources"]],
-                         [(sample.AGENT, True, 0, self.finding["label"]), (sample.SCANNER, False, None, explore.SWEEP_ONLY)])
+                         [(sample.AGENT, True, 1, self.finding["label"]), (sample.SCANNER, False, None, explore.SWEEP_ONLY)])
+        self.assertEqual([s["narrowed"] for s in self.data["sources"]], [True, False])
         self.assertEqual(self.data["counts"], {
             "inbound_sessions": self.res["detection"]["inbound_sessions"], "outside_sources": 3, "sweeping": 2,
-            "flagged": 1, "sources_drawn": 2, "hosts_tried": 40, "hosts_drawn": 40, "subnets_tried": 2,
+            "narrowed": 1, "flagged": 1, "sources_drawn": 2, "hosts_tried": 40, "hosts_drawn": 40, "subnets_tried": 2,
             "subnets_drawn": 2})
+        # the page is told the timing settings of the run, so it can say what an agent's pace meant
+        self.assertEqual(self.data["timing"], self.res["settings"]["timing"])
         self.assertEqual(self.data["window"], [self.res["detection"]["lookback_start"], self.res["detection"]["lookback_end"]])
 
     def test_a_flagged_source_carries_its_findings_numbers(self):
@@ -251,6 +254,34 @@ class PageTests(Base):
             self.assertTrue(explore._read(name), name)
 
 
+class OtherPaceTests(Base):
+    """A source that swept and narrowed, but not at an agent's pace: on the map, not flagged."""
+
+    def test_it_is_drawn_unflagged_with_what_it_did_and_the_pace_it_kept(self):
+        sessions = sorted(sample.sessions() + sample.other_pace(), key=lambda s: s["ts"])
+        res, data, paths = self.run_logs(sessions)
+        self.assertEqual([f["source"] for f in res["detection"]["findings"]], [sample.AGENT])
+        # after the flagged source come those that narrowed, then the largest sweeps
+        self.assertEqual([(s["ip"], s["flagged"], s["narrowed"], s["level"], s["label"]) for s in data["sources"]],
+                         [(sample.AGENT, True, True, 1, "Agentic behaviour"),
+                          (sample.FOLLOWER, False, True, None, explore.OTHER_PACE),
+                          (sample.SCANNER, False, False, None, explore.SWEEP_ONLY)])
+        counts = data["counts"]
+        self.assertEqual((counts["sweeping"], counts["narrowed"], counts["flagged"]), (3, 2, 1))
+        follower, scanner = data["sources"][1:]
+        # why it is not flagged: three services it came back to, in two bursts with one pause, not in the band
+        self.assertEqual(follower["pace"], {"services_total": 3, "bursts_all": 2, "pauses": 1, "pauses_in_band": 0})
+        self.assertNotIn("pace", scanner)
+        # solid beams and gold hosts belong to flagged sources only
+        for s in (follower, scanner):
+            self.assertNotIn("services", s)
+        narrowed = {h["ip"]: (h["narrowed"], h["sources"]) for h in data["hosts"] if h["state"] == "narrowed"}
+        self.assertEqual(narrowed, {h: (1, 3) for h, _ in sample.NARROWED})
+        # and the report links to the flagged source alone
+        self.assertEqual(re.findall(r"explorer\.html#source=([0-9.]+)", self.read(paths["report.md"])), [sample.AGENT])
+        self.assertEqual(res["explorer"], {"file": "explorer.html", "sources_drawn": 3, "findings_drawn": 1})
+
+
 class ReportLinkTests(unittest.TestCase):
     def test_only_a_page_in_the_same_folder_becomes_a_link(self):
         self.assertEqual(report._inline("[Map](explorer.html#source=2001:db8::5)"),
@@ -263,10 +294,12 @@ class ReportLinkTests(unittest.TestCase):
         f = {"source": "203.0.113.9", "level": 0, "label": "x", "log_sources": ["zeek"], "start_times": {"zeek_ts": 1},
              "probe_start": "", "services_probed": 1, "hosts_probed": 1, "ports_probed": 1, "probe_end": "",
              "failed_share": 1.0, "services_answered": 0, "narrowing_start": "", "focus_share": 1.0, "hosts_hit": [],
-             "timing": "", "campaign_hours": 0.0, "first_seen": "", "last_seen": "", "sessions": 1,
+             "timing": {"status": "unavailable", "reason": "none of its sessions has a start time"},
+             "campaign_hours": 0.0, "first_seen": "", "last_seen": "", "sessions": 1,
              "threat_evidence": "", "services": [], "services_total": 0}
-        self.assertNotIn("explorer.html", "\n".join(report._finding_lines(f)))
-        self.assertIn("(explorer.html#source=203.0.113.9)", "\n".join(report._finding_lines(f, "explorer.html")))
+        st = Config().settings()
+        self.assertNotIn("explorer.html", "\n".join(report._finding_lines(f, st)))
+        self.assertIn("(explorer.html#source=203.0.113.9)", "\n".join(report._finding_lines(f, st, "explorer.html")))
 
 
 if __name__ == "__main__":

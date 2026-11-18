@@ -7,11 +7,13 @@
 #             can change its answers without any error (1.3.0 did), so both ends are tested
 #   realdata  scripts/realdata/check.py: runs the tool on Brim's public WRCCDC 2018 Zeek logs (a
 #             million real sessions) and compares its counts with a separate plain reading of the
-#             log; nothing in that capture may be flagged from Zeek, and the agentic source the
-#             tests use, added to it, must be, from Zeek, from a Palo Alto form and from both
-#   explorer  scripts/smoke/explorer_smoke.py: opens the Explorer page of four sample runs in headless
-#             Chromium, walks 3D, a source, a host, Flat and the report's link to the map, and fails on
-#             a page error or on a body or beam that is in the data and not drawn
+#             log, bursts and pauses included; nothing in that capture may be flagged, and the
+#             agentic source the tests use, added to it, must be, at level 1, from Zeek, from a Palo
+#             Alto form and from both
+#   explorer  scripts/smoke/explorer_smoke.py: opens the Explorer page of five sample runs in headless
+#             Chromium, walks 3D, every source, a host, Flat and the report's link to the map, and fails
+#             on a page error, on a body or beam that is in the data and not drawn, or on a source whose
+#             panel does not give its level or the reason it is not flagged
 # Nothing here needs secrets or an API key. The Brim files are downloaded on the CI machine, pinned
 # to an exact commit and SHA-256 checked; they are never committed.
 name: CI

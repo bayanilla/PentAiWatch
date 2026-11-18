@@ -6,11 +6,13 @@ penetration-testing tool: a sweep of many hosts or ports, a return to only the s
 answered, and short bursts of activity separated by pauses while a model decides what to do next.
 
 **Status.** This version reads Zeek `conn.log` and Palo Alto traffic logs, alone or together,
-and scores two of the three signals: the sweep and the narrowing. Every flagged source is reported
-as *Tier 0. Sweep and narrow seen, timing unavailable*. It writes a report and an
-[Explorer](#explorer), a 3D map of what each source swept and came back to. The timing signal, the
-Explorer's Timeline and the threat-log confidence levels arrive in the next pull requests. How
-each signal is worked out is in [METHODS.md](METHODS.md).
+and scores all three signals: the sweep, the narrowing and the timing. A source where all three
+fire is reported as *Level 1. Agentic behaviour*. When the sweep and the narrowing fire but the
+sessions have no start time to check the pace by, it is reported one step lower, as *Tier 0. Sweep
+and narrow seen, timing unavailable*. It writes a report and an [Explorer](#explorer), a 3D map of
+what each source swept and came back to. The Explorer's Timeline and the threat-log confidence
+levels (2 and 3) arrive in the next pull requests. How each signal is worked out is in
+[METHODS.md](METHODS.md).
 
 ## Run it
 
@@ -50,7 +52,8 @@ network connections, and neither do the pages it writes.
   outside source tried: grey when nothing answered, blue when it answered a sweep, and in the
   tier's colour, on a tall pillar, when a source kept coming back to it.
 - **The INTERNET arc.** The outside sources that swept sit on an arc above the network. A filled
-  diamond is a flagged source, a hollow one swept and did not narrow.
+  diamond is a flagged source. A hollow one swept and is not flagged: it did not narrow, or it
+  narrowed at a pace that is not an agent's (click it to see which, and why).
 - **Beams.** A dashed beam is a source's sweep of one subnet. A solid beam goes down to a host
   the source kept coming back to. With many sources the sweeps fade to a haze, so the solid
   beams stand out.
@@ -63,17 +66,17 @@ middle-drag moves the picture up or down and the wheel zooms. **Flat** gives the
 from above with the sources in a row. **?** says what is on screen, and the search box finds a
 source, a host, a subnet or a port.
 
-A big run is cut to what a browser draws comfortably: 48 sources (flagged ones first, then the
-largest sweeps), 120 subnets and 2,000 hosts, chosen so that every host a source kept coming back
-to is drawn. The counts stay whole, and the page says what is not drawn. The Timeline of a
-source's bursts and pauses arrives with the timing signal.
+A big run is cut to what a browser draws comfortably: 48 sources (flagged ones first, then those
+that narrowed, then the largest sweeps), 120 subnets and 2,000 hosts, chosen so that every host a
+flagged source kept coming back to is drawn. The counts stay whole, and the page says what is not
+drawn. A Timeline of a source's bursts and pauses is the next addition.
 
 To see it without logs of your own:
 
     python scripts/smoke/explorer_smoke.py --samples demo --build-only
 
 writes the tests' sample logs into `demo/input/`, analyzes them and leaves
-`demo/zeek_only/explorer.html` (and three more runs) to open.
+`demo/zeek_only/explorer.html` (and four more runs) to open.
 
 ## Optional files in the input folder
 
@@ -110,6 +113,15 @@ Each can also be given on the command line: `--network-map`, `--known-scanners`,
     "min_focus_share": 0.6,
     "zeek_answered_states": ["SF", "S1", "S2", "S3", "RSTO"],
     "protocols": ["tcp", "udp"]
+  },
+  "timing": {
+    "burst_gap_seconds": 15,
+    "max_burst_sessions": 15,
+    "pause_min_seconds": 20,
+    "pause_max_seconds": 35,
+    "min_cycles": 5,
+    "min_pause_share": 0.6,
+    "min_timed_share": 0.9
   },
   "paloalto": {
     "fields": {
@@ -184,7 +196,8 @@ packet count were read from, so a wrong name shows up there instead of in the re
 **Start times.** Timing is only ever worked out from session start times. For each traffic row
 the start is the start-time field if it has a value, else the end time minus the elapsed seconds.
 A row with neither keeps its end time, so the sweep and the narrowing can still be seen, is never
-used for timing, and is counted in a warning. Each finding says how its start times were found.
+used for timing, and is counted in a warning. Each finding says how its start times were found. A
+source whose sessions have no start time cannot reach level 1: it is reported as tier 0.
 
 **Stops instead of guessing.** A traffic export without a column for the source, destination,
 destination port, protocol, action, bytes received, or any time stops the run with a message that
@@ -197,6 +210,9 @@ names the file, what is missing and the columns the file does have.
   across several sources, each below the thresholds or each reported on its own. Grouping
   sources by targeted service, time window and network owner (ASN) is planned; the detection
   keeps what that step needs.
+- **Timing sees connection starts, nothing inside a connection.** A tool that sends many requests
+  over one connection it keeps open, or runs several jobs at once from one address, shows fewer
+  pauses and can go unflagged.
 - **Inbound only.** Outside sources towards internal hosts. Activity between internal hosts and
   outbound traffic from a compromised host are not looked at.
 - **Not flagged does not mean cleared.** Only connection metadata is read.
@@ -245,11 +261,13 @@ The Explorer page is put together from MAX's too:
 
 The tests generate their own logs (`tests/kit.py`, `tests/sample.py`): an agentic source, a plain
 scanner and an ordinary client, written as Zeek `conn.log`, as a Palo Alto CSV export and as Palo
-Alto syslog lines. No log files are committed.
+Alto syslog lines, plus a source that sweeps and narrows exactly as the agent does at another pace.
+The timing tests check every number against a plain reading of the same sessions that shares no
+code with the detection. No log files are committed.
 
 The Explorer page is checked in a real browser. `scripts/smoke/explorer_smoke.py` writes the
-sample logs four ways, analyzes them, opens each `explorer.html` in headless Chromium and walks
-the 3D view, a source, a host, the Flat view and the report's link to the map. It fails on any
+sample logs five ways, analyzes them, opens each `explorer.html` in headless Chromium and walks
+the 3D view, every source, a host, the Flat view and the report's link to the map. It fails on any
 page error, on a body or a beam that is not drawn, and on a run with nothing to draw that does
 not say so:
 
@@ -268,9 +286,9 @@ committed.
     python scripts/realdata/fetch.py brim-data
     python scripts/realdata/check.py brim-data realdata-work
 
-It checks that the counts match a separate plain reading of the log, that the same sources are
-flagged from every form of the log, and that the agentic source the unit tests use, added to the
-capture, is flagged from Zeek alone, from a Palo Alto form of the same sessions, and from both
+It checks that the counts match a separate plain reading of the log, that nothing in the capture
+itself is flagged, and that the agentic source the unit tests use, added to the capture, is
+flagged at level 1 from Zeek alone, from a Palo Alto form of the same sessions, and from both
 with every session counted once. The Palo Alto form is written from the Zeek log by
 `scripts/realdata/to_paloalto.py`; it is not a real firewall log.
 
@@ -280,12 +298,15 @@ What the capture shows about the signals:
   they are not flagged. Most rescan the same range again and again: after their first return, at
   most 7% of their sessions go to services that answered (two come closer, at 29% and 50%).
   Without the `min_focus_share` condition, 13 of those 14 would be flagged.
-- One source is flagged, from every form of the log: an nmap run (a ping sweep of 8,192
-  addresses, a port scan, then service detection on what answered). Sweep-then-narrow is what
-  service detection looks like, which is why tier 0 alone is weak evidence and the timing signal
-  matters. Its sweep is mostly pings. Zeek gives every ICMP record the state `OTH`, so a ping is
+- One source sweeps and then narrows: an nmap run (a ping sweep of 8,192 addresses, a port scan,
+  then service detection on what answered). Sweep-then-narrow is what service detection looks
+  like, and the timing signal is what tells it from an agentic tool: its 39,746 sessions come in 6
+  bursts with 5 pauses between them, none of them 20 to 35 seconds long. It is not flagged, and
+  the report counts it as a source that narrowed at another pace. No source in the capture keeps
+  an agent's pace, with or without a sweep.
+- That source's sweep is mostly pings. Zeek gives every ICMP record the state `OTH`, so a ping is
   judged by its reply in both logs (see METHODS.md); judged by state alone, the Zeek log missed
-  this sweep and the firewall form did not.
+  the sweep and the firewall form did not.
 - A refused connection counts as failed in Zeek (`REJ`) and as answered on the firewall (a reset
   came back). In this capture, where nothing drops the sweeps, that leaves only 4 of the 15
   sweeping sources recognised in the Palo Alto form. See METHODS.md.

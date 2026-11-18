@@ -18,6 +18,9 @@ LIMITATIONS = [
     "Scoring is per source address. These tools rotate through residential, datacenter and free "
     "proxies or Tor when blocked, so one campaign can be split across several sources, each below "
     "the thresholds or each reported separately.",
+    "Timing reads when sessions start and nothing inside them. A tool that sends many requests over "
+    "one connection it keeps open, or runs several jobs at once from one address, shows fewer pauses "
+    "and can go unflagged.",
     "Only connection metadata is read. A source that is not flagged has not been cleared.",
 ]
 

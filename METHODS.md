@@ -2,8 +2,9 @@
 
 PentAIWatch looks at one direction only: sessions from outside addresses to your internal hosts.
 For each outside source it asks whether the source swept many targets, then went back only to
-what answered. A plain scanner sweeps but rarely narrows. A person narrows but not at machine
-pace. The combination is the signal.
+what answered, in short bursts separated by pauses the length of a model's think time. A plain
+scanner sweeps but rarely narrows. A person narrows but not at machine pace. The combination is
+the signal.
 
 All times are UTC. Every number below is a setting (see the README).
 
@@ -63,7 +64,8 @@ time was found, and each finding reports the counts.
 | Palo Alto | otherwise none: the end time is kept so the session lands in the right scoring window, and it is never used for timing | `none` |
 
 Rows resolve one by one, so an export where only some rows have a start time still gets the
-best answer for each. Sessions recorded as `none` are counted in a warning, once.
+best answer for each. Sessions recorded as `none` are counted in a warning, once. They still count
+in the sweep and the narrowing, and they are never timed.
 
 ## When both logs are present
 
@@ -118,16 +120,55 @@ For a window where probing fired, narrowing fires when all of these hold:
 - It stayed on what answered: from that point, for one window, at least `min_focus_share` (60%)
   of the source's sessions went to services that had answered.
 
+## Signal 3: timing
+
+An agentic tool works in steps: a few connections, then a pause while the model decides what to
+do next. Timing looks for that rhythm in the START times of a source's sessions (see "Start
+times"), for every source where narrowing fired.
+
+- **Bursts.** The source's sessions are put in order of start time. A gap of more than
+  `burst_gap_seconds` (15) between two starts ends a burst. A burst is *short* when it has at most
+  `max_burst_sessions` (15) sessions. Nothing is asked of the spacing inside a burst.
+- **Pauses.** A pause runs from the last start of one burst to the first start of the next. It is
+  *in the band* when it lasts `pause_min_seconds` (20) to `pause_max_seconds` (35).
+
+Timing fires in a scoring window when both of these hold for the pauses that begin in it:
+
+- at least `min_cycles` (5) short bursts are each followed by a pause in the band, and
+- at least `min_pause_share` (60%) of all the pauses are in the band. This is the "mostly". A source
+  whose pauses are of every length has some in the band by chance (the ordinary client in the
+  tests has ten in one window), and this keeps it out.
+
+The pauses need not be alike, and long breaks do no harm: a campaign that stops for an hour adds
+one pause that is not in the band.
+
+A source where probing and narrowing fired is then one of three things:
+
+| Timing | Result |
+|---|---|
+| Fired in at least one window | Level 1 |
+| Did not fire, and fewer than `min_timed_share` (90%) of the source's sessions have a start time. Usually none has: a Palo Alto export with neither a start nor an elapsed time | Tier 0. The pace could not be judged, and the finding says how many sessions could be timed |
+| Did not fire, and the source was seen nearly whole | Not flagged. It swept and narrowed at some other pace: a scanner following up on what it found, or a person. The report counts these sources and the Explorer draws them |
+
+A level 1 finding gives the number of short bursts followed by a pause in the band over the whole
+lookback, the median of those pauses, and the window in which timing fired with the most of them.
+
+**What timing cannot see.** Only the moment a connection starts is read. A tool that sends its
+requests over one connection it keeps open shows one start, not a burst, and a tool that runs
+several jobs at once from one address fills its own pauses. Either can leave an agentic tool
+unflagged. Whole-second firewall times move a pause by up to a second either way, which matters
+only for pauses at the very edge of the band.
+
 ## Tiers and levels
 
 | | Meaning |
 |---|---|
-| Tier 0. Sweep and narrow seen, timing unavailable | Probing and narrowing fired. Timing could not be evaluated. |
+| Level 1. Agentic behaviour | Probing, narrowing and timing all fired. |
+| Tier 0. Sweep and narrow seen, timing unavailable | Probing and narrowing fired. Timing could not be judged, because the sessions have no start time. |
 
-Levels 1 to 3 need the timing signal and the scoring of Palo Alto threat logs, which are not
-built yet. Until then every flagged source is tier 0. A finding says "threat logs not provided"
-when the run had none, and "threat logs were read but are not scored yet" when it had some, so a
-low tier is never read as "no exploit attempts".
+Levels 2 and 3 need the scoring of Palo Alto threat logs, which is not built yet. A finding says
+"threat logs not provided" when the run had none, and "threat logs were read but are not scored
+yet" when it had some, so a low level is never read as "no exploit attempts".
 
 ## What the Explorer draws
 
@@ -135,21 +176,24 @@ low tier is never read as "no exploit attempts".
 de-duplicated sessions as the detection, so a session both logs recorded counts once on the map too.
 
 - **Sources.** A source is drawn when the probing signal fired for it. The flagged ones carry
-  their finding; the others are marked *Swept, did not narrow*.
+  their finding. The others are marked *Swept, did not narrow* or, when they narrowed at another
+  pace, *Swept and narrowed, not at an agent's pace*, with the bursts and pauses that say so.
 - **One window per source.** Everything about a source's sweep (the services, hosts and ports it
   tried, the share that failed, what answered) is counted in one window: the one its finding was
-  built from, or, for a source that is not flagged, the one in which it tried the most services. A
-  scanner that repeats its sweep every twelve hours is drawn with one sweep, not with their sum.
+  built from, or, for a source that is not flagged, the one after which it narrowed, else the one
+  in which it tried the most services. A scanner that repeats its sweep every twelve hours is
+  drawn with one sweep, not with their sum.
 - **Hosts.** A dot is a host that a drawn source tried in that window. It shows the most telling
-  thing that happened to it: a source kept coming back to it, else it answered a sweep, else it
-  was tried and nothing answered.
+  thing that happened to it: a flagged source kept coming back to it, else it answered a sweep,
+  else it was tried and nothing answered. Solid beams and pillars are kept for flagged sources: a
+  host that only a source at another pace came back to is drawn as one that answered.
 - **Subnets.** Hosts are grouped by /24 (IPv6: /64). A ring takes its name from the range in
   `network_map.csv` that holds its hosts, when there is one.
-- **Cuts.** At most 48 sources (flagged ones first, in the report's order, then the largest
-  sweeps), 120 subnets (those with a host a source kept coming back to first, then by hosts that
-  answered, then by hosts tried) and 2,000 hosts (every host a source kept coming back to, then
-  those that answered, then those only tried, each subnet taking its turn), and 200 services
-  listed per source. Among equals the pick follows a hash of the address, so the same logs always
+- **Cuts.** At most 48 sources (flagged ones first, in the report's order, then those that
+  narrowed, then the largest sweeps), 120 subnets (those with a host a flagged source kept coming
+  back to first, then by hosts that answered, then by hosts tried) and 2,000 hosts (every host a
+  flagged source kept coming back to, then those that answered, then those only tried, each
+  subnet taking its turn), and 200 services listed per source. Among equals the pick follows a hash of the address, so the same logs always
   give the same picture. Every count on the page is of the whole run; where less is drawn, the
   page says how much.
 

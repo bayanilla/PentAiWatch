@@ -29,6 +29,13 @@ const COL = {t0: css('--t0'), l1: css('--l1'), l2: css('--l2'), l3: css('--l3'),
 // a flagged source's tier or level, as a colour key, a short tag and its name
 const levelKey = d => !d.flagged ? 'sweep' : ['t0', 'l1', 'l2', 'l3'][Math.max(0, Math.min(3, d.level || 0))];
 const levelTag = d => !d.flagged ? 'Not flagged' : d.level ? 'Level ' + d.level : 'Tier 0';
+// the pause band of the timing signal in this run, as in "20 to 35 second"
+const TIMING = D.timing || {};
+const BAND = `${TIMING.pause_min_seconds == null ? 20 : TIMING.pause_min_seconds} to ${TIMING.pause_max_seconds == null ? 35 : TIMING.pause_max_seconds} second`;
+// sources that narrowed but are not flagged: their pace was checked and is not an agent's. When the
+// run has any, the sources that are not flagged are no longer all "swept only".
+const OTHER_PACE = Math.max(0, (CNT.narrowed || 0) - (CNT.flagged || 0)) > 0;
+const UNFLAGGED = OTHER_PACE ? 'Swept, not flagged' : 'Swept, did not narrow';
 const LOG_TEXT = {zeek: 'Zeek conn.log', paloalto: 'Palo Alto traffic log'};
 const START_TEXT = {zeek_ts: 'Zeek ts (always the session start)', start_field: 'firewall start-time field',
   end_minus_elapsed: 'firewall end time minus elapsed seconds', none: 'no start time available', '': 'not stated by the log reader'};
@@ -396,7 +403,7 @@ function drawNode(n) {
   const sel = state.sel === n, hov = state.hover === n;
   ctx.globalAlpha = n.a;
   if (!R3) {
-    if (n.kind === 'src') {   // outside sources are diamonds, hollow when they swept and did not narrow
+    if (n.kind === 'src') {   // outside sources are diamonds, hollow when they are not flagged
       ctx.fillStyle = n.d.flagged ? n.color : BG_OUT; ctx.strokeStyle = n.color; ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.moveTo(x, y - r * 1.25); ctx.lineTo(x + r * 1.25, y); ctx.lineTo(x, y + r * 1.25); ctx.lineTo(x - r * 1.25, y); ctx.closePath();
       ctx.fill(); ctx.stroke();
@@ -516,7 +523,7 @@ function hostLabels(on, taken) {
   return names.concat(marks.map(m => m.box));
 }
 const nFlagged = srcNodes.filter(n => n.d.flagged).length, nSwept = srcNodes.length - nFlagged;
-const ARC_TITLE = 'INTERNET · ' + [nFlagged ? `${nFlagged} FLAGGED SOURCE${nFlagged === 1 ? '' : 'S'}` : '', nSwept ? `${nSwept} SWEPT ONLY` : ''].filter(Boolean).join(' · ');
+const ARC_TITLE = 'INTERNET · ' + [nFlagged ? `${nFlagged} FLAGGED SOURCE${nFlagged === 1 ? '' : 'S'}` : '', nSwept ? `${nSwept} ${OTHER_PACE ? 'NOT FLAGGED' : 'SWEPT ONLY'}` : ''].filter(Boolean).join(' · ');
 const notDrawn = Math.max(0, (CNT.sweeping || 0) - srcNodes.length), quiet = Math.max(0, (CNT.outside_sources || 0) - (CNT.sweeping || 0));
 const ARC_SUB = [notDrawn ? `${fmt(notDrawn)} MORE SWEEPING SOURCE${notDrawn === 1 ? '' : 'S'} NOT DRAWN` : '',
   quiet ? `${fmt(quiet)} OTHER OUTSIDE SOURCE${quiet === 1 ? '' : 'S'} DID NOT SWEEP` : ''].filter(Boolean).join(' · ');
@@ -835,11 +842,11 @@ function renderList() {
   const q = $('search').value.trim().toLowerCase();
   const flagged = srcNodes.filter(n => n.d.flagged && matches(n, q)), swept = srcNodes.filter(n => !n.d.flagged && matches(n, q));
   let h = `<div class="lhead">Flagged sources <span>${fmt(q ? flagged.length : CNT.flagged)}</span></div>`;
-  h += flagged.length ? flagged.map(srcRow).join('') : `<div class="lnote">${q ? 'None match.' : 'No source swept and then narrowed.'}</div>`;
+  h += flagged.length ? flagged.map(srcRow).join('') : `<div class="lnote">${q ? 'None match.' : 'No source is flagged.'}</div>`;
   if (!q && CNT.flagged > nFlagged) h += `<div class="lnote">${fmt(CNT.flagged - nFlagged)} more are in the report.</div>`;
   if (swept.length || (!q && nSwept)) {
-    h += `<div class="lhead">Swept, did not narrow <span>${fmt(q ? swept.length : Math.max(0, (CNT.sweeping || 0) - (CNT.flagged || 0)))}</span></div>` + swept.map(srcRow).join('');
-    if (!q && notDrawn) h += `<div class="lnote">The ${fmt(nSwept)} largest sweeps are drawn.</div>`;
+    h += `<div class="lhead">${UNFLAGGED} <span>${fmt(q ? swept.length : Math.max(0, (CNT.sweeping || 0) - (CNT.flagged || 0)))}</span></div>` + swept.map(srcRow).join('');
+    if (!q && notDrawn) h += `<div class="lnote">${OTHER_PACE ? `${fmt(nSwept)} are drawn: those that narrowed, then the largest sweeps.` : `The ${fmt(nSwept)} largest sweeps are drawn.`}</div>`;
   }
   if (q) {
     const found = hostNodes.filter(n => matches(n, q)).sort((a, b) => STATE_RANK[a.d.state] - STATE_RANK[b.d.state] || (a.id < b.id ? -1 : 1));
@@ -879,6 +886,28 @@ $('search').addEventListener('keydown', e => {
 });
 
 const stat = (n, text) => `<div class="stat"><b>${n}</b><span>${esc(text)}</span></div>`;
+// what the timing signal found for a flagged source (d.timing), in a sentence or two
+function timingText(d) {
+  const t = d.timing;
+  if (!t || typeof t !== 'object') return 'Not evaluated.';
+  if (t.status !== 'agentic') return `Not evaluated: ${esc(t.reason || 'no start times')}.`;
+  return `<b>${fmt(t.bursts)}</b> short ${t.bursts === 1 ? 'burst' : 'bursts'}, each followed by a ${BAND} pause, of ${plural(t.bursts_all, 'burst')} in all. ` +
+    `Typical pause: <b>${t.typical_pause_seconds} seconds</b>.` +
+    (t.window_start ? ` Most in the window from ${when(t.window_start)}: ${fmt(t.window_bursts)}, with ${pct(t.window_pause_share)} of all that window's pauses in the band.` : '') +
+    (t.sessions_timed < d.sessions ? ` Counted over the ${fmt(t.sessions_timed)} of its ${fmt(d.sessions)} sessions that have a start time.` : '');
+}
+// why a source that swept is not flagged
+function whyNot(d) {
+  if (!d.narrowed) return 'It swept many hosts or ports and did not then keep coming back to the few services that answered. That looks like plain scanning.';
+  const p = d.pace || {}, pauses = p.pauses || 0, inBand = p.pauses_in_band || 0;
+  const rhythm = !pauses ? `its sessions came in one burst, with no pause in it`
+    : pauses === 1 ? `its sessions came in 2 bursts with 1 pause between them, which was ${inBand ? '' : 'not '}${BAND}s long`
+    : `its sessions came in ${plural(p.bursts_all || 0, 'burst')} with ${fmt(pauses)} pauses between them, ${inBand ? fmt(inBand) : 'none'} of them ${BAND}s long`;
+  const asked = `The timing signal asks for ${TIMING.min_cycles == null ? 5 : TIMING.min_cycles} or more short bursts in one scoring window, each followed by a ${BAND} pause, ` +
+    `and for ${pct(TIMING.min_pause_share == null ? 0.6 : TIMING.min_pause_share)} or more of that window's pauses to be that long.`;
+  return `It swept and then kept coming back to ${plural(p.services_total || 0, 'service')} that answered, but not at an agent's pace: ${rhythm}. ` +
+    `${asked} This looks like a scanner following up on what it found, or a person at work.`;
+}
 function sourcePanel(n) {
   const d = n.d, f = d.flagged;
   let h = `<h2>${esc(d.ip)}</h2><div class="ipline">Outside source · seen in ${esc(listAnd((d.log_sources || []).map(s => LOG_TEXT[s] || s)) || 'the logs')}</div>` +
@@ -903,9 +932,9 @@ function sourcePanel(n) {
         `<span class="sub">${net ? esc(net) + ' · ' : ''}first return ${when(ts)}${hn ? '' : ' · host not drawn'}</span></div>`;
     }).join('');
     if (d.services_total > (d.services || []).length) h += `<p>and ${fmt(d.services_total - d.services.length)} more.</p>`;
-    h += `<h3>Timing</h3><p>${esc(d.timing)}</p><h3>Exploit evidence</h3><p>${esc(d.threat_evidence)}</p>`;
+    h += `<h3>Timing</h3><p>${timingText(d)}</p><h3>Exploit evidence</h3><p>${esc(d.threat_evidence)}</p>`;
   } else {
-    h += '<h3>Why it is not flagged</h3><p>It swept many hosts or ports and did not then keep coming back to the few services that answered. That looks like plain scanning.</p>';
+    h += `<h3>Why it is not flagged</h3><p>${whyNot(d)}</p>`;
   }
   h += `<h3>Campaign</h3><p>${span(d.campaign_hours || 0)}, ${when(d.first_seen)} to ${when(d.last_seen)}, ${plural(d.sessions, 'session')}.</p>`;
   if (f && d.start_times) h += `<p>Start times resolved by ${Object.entries(d.start_times).map(([k, v]) => `${esc(START_TEXT[k] || k)} (${plural(v, 'session')})`).join('; ')}.</p>`;
@@ -1016,7 +1045,7 @@ if (!state.motion) $('btn-motion').setAttribute('aria-pressed', 'false');
   const keys = [...new Set(srcNodes.filter(n => n.d.flagged).map(n => levelKey(n.d)))];
   const names = {t0: 'tier 0', l1: 'level 1', l2: 'level 2', l3: 'level 3'}, first = keys[0] || 't0';
   $('legend').innerHTML = keys.map(k => `<span><span class="dm c-${k}"></span>Flagged source, ${names[k]}</span>`).join('') +
-    (nSwept ? '<span><span class="dm hollow"></span>Swept, did not narrow</span>' : '') +
+    (nSwept ? `<span><span class="dm hollow"></span>${UNFLAGGED}</span>` : '') +
     `<span><i style="background:repeating-linear-gradient(90deg,${COL.sweep} 0 5px,transparent 5px 9px)"></i>Sweep</span>` +
     (keys.length ? `<span><i style="background:${COL[first]}"></i>Service it kept coming back to</span>` : '') +
     (keys.length ? `<span><span class="sw c-${first}"></span>Host narrowed onto</span>` : '') +
@@ -1024,7 +1053,7 @@ if (!state.motion) $('btn-motion').setAttribute('aria-pressed', 'false');
     '<span class="cal">Connection metadata only: leads to check, not proof of an attack</span>';
 }
 {
-  const w = D.window || [], bits = [`${fmt(CNT.flagged)} flagged`, `${fmt(Math.max(0, (CNT.sweeping || 0) - (CNT.flagged || 0)))} swept only`,
+  const w = D.window || [], bits = [`${fmt(CNT.flagged)} flagged`, `${fmt(Math.max(0, (CNT.sweeping || 0) - (CNT.flagged || 0)))} ${OTHER_PACE ? 'not flagged' : 'swept only'}`,
     `${fmt(CNT.inbound_sessions)} inbound sessions from ${plural(CNT.outside_sources || 0, 'outside source')}`];
   if (w[0]) bits.push(`${when(w[0]).slice(0, 16)} → ${when(w[1])}`);
   $('subtitle').textContent = bits.join(' · ');

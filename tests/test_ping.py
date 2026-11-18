@@ -19,29 +19,32 @@ TARGET = ("10.10.3.5", 443)
 
 
 def ping_sweep_then_narrow() -> list[dict]:
-    """Pings 40 hosts a second apart (two answer), then keeps coming back to one web service."""
+    """Pings 40 hosts a second apart (two answer), then keeps coming back to one web service: 40
+    sessions in bursts of five, a second apart, with 25 seconds between bursts (an agent's pace, so
+    the source is flagged and its sweep can be read from the finding)."""
     out, t = [], sample.T0 + 600
     for host in HOSTS:
         out.append(kit.ping(t, SRC, host, answered=host in ALIVE))
         t += 1.0
     t += 60
-    for _ in range(40):
+    for i in range(40):
         out.append(kit.session(t, SRC, TARGET[0], TARGET[1], "SF"))
-        t += 5.0
+        t += 25.0 if i % 5 == 4 else 1.0
     return out
 
 
 def port_sweep_then_pings() -> list[dict]:
-    """Sweeps 60 closed ports across 3 hosts, then only pings one host, which answers every time."""
+    """Sweeps 60 closed ports across 3 hosts, then only pings one host, which answers every time:
+    20 pings in pairs a second apart, with 25 seconds between pairs."""
     out, t = [], sample.T0 + 600
     for i, host in enumerate(HOSTS[:3]):
         for port in range(8000 + 20 * i, 8020 + 20 * i):
             out.append(kit.session(t, SRC, host, port, "S0"))
             t += 1.0
     t += 60
-    for _ in range(20):
+    for i in range(20):
         out.append(kit.ping(t, SRC, HOSTS[0], answered=True))
-        t += 5.0
+        t += 25.0 if i % 2 else 1.0
     return out
 
 
@@ -135,7 +138,8 @@ class NarrowingTests(Base):
     def test_a_host_that_answers_pings_is_not_a_service_narrowed_onto(self):
         _, got = self.run_on([self.zeek(port_sweep_then_pings())])
         self.assertEqual(got.probing_sources, 1)          # the port sweep is seen
-        self.assertEqual(got.findings, [])                # and coming back with pings is not narrowing
+        # and coming back with pings is not narrowing
+        self.assertEqual((got.narrowing_sources, got.findings), (0, []))
 
     def test_narrowing_protocols_setting_decides_that(self):
         cfg = Config()

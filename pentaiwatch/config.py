@@ -8,6 +8,7 @@ log), or pass one with ``--config``. It only needs the settings you want to chan
       "allowlist": ["198.51.100.0/28"],
       "probing": {"min_ports": 80},
       "narrowing": {"min_sessions_per_service": 8},
+      "timing": {"pause_max_seconds": 40},
       "paloalto": {"fields": {"elapsed": ["Session Duration"]}}
     }
 
@@ -56,6 +57,24 @@ class Narrowing:
     # Protocols whose services a source can narrow onto. A host that answers pings is not a service
     # to come back to, so ICMP counts in the sweep and is never listed as narrowed onto.
     protocols: list[str] = field(default_factory=lambda: ["tcp", "udp"])
+
+
+@dataclass
+class Timing:
+    """Signal 3: the source works in short bursts of sessions separated by pauses the length of a
+    model's think time. Only session START times are used."""
+    burst_gap_seconds: float = 15        # a gap longer than this between two session starts ends a burst
+    max_burst_sessions: int = 15         # a burst is short when it has at most this many sessions
+    pause_min_seconds: float = 20        # the band a pause must fall in: at least this long ...
+    pause_max_seconds: float = 35        # ... and at most this long
+    min_cycles: int = 5                  # short bursts, each followed by a pause in the band, in one window
+    # "Mostly": of ALL the pauses between the source's bursts in that window, at least this share
+    # is in the band. It keeps a source whose pauses are every length from passing by chance.
+    min_pause_share: float = 0.60
+    # Timing can only clear a source when it saw nearly all of it. When timing does not fire and
+    # less than this share of the source's sessions has a usable start time, the result is
+    # "timing unavailable" (tier 0), not "no agentic pace".
+    min_timed_share: float = 0.90
 
 
 # -- Palo Alto logs: nothing about the export's layout is fixed in code ----------------------
@@ -138,6 +157,7 @@ class Config:
     dedup_skew_seconds: float = 2.0
     probing: Probing = field(default_factory=Probing)
     narrowing: Narrowing = field(default_factory=Narrowing)
+    timing: Timing = field(default_factory=Timing)
     paloalto: PaloAlto = field(default_factory=PaloAlto)
     # Filled by the pipeline from network_map.csv and known_scanners.csv (not settings).
     networks: list[dict] = field(default_factory=list, metadata={"runtime": True})
@@ -233,18 +253,31 @@ def check(cfg: Config, name: str = "settings") -> None:
     positive = {"lookback_hours": cfg.lookback_hours, "window_hours": cfg.window_hours,
                 "probing.min_ports": cfg.probing.min_ports, "probing.min_hosts": cfg.probing.min_hosts,
                 "narrowing.min_sessions_per_service": cfg.narrowing.min_sessions_per_service,
-                "narrowing.max_start_delay_minutes": cfg.narrowing.max_start_delay_minutes}
+                "narrowing.max_start_delay_minutes": cfg.narrowing.max_start_delay_minutes,
+                "timing.burst_gap_seconds": cfg.timing.burst_gap_seconds,
+                "timing.max_burst_sessions": cfg.timing.max_burst_sessions,
+                "timing.pause_min_seconds": cfg.timing.pause_min_seconds,
+                "timing.pause_max_seconds": cfg.timing.pause_max_seconds,
+                "timing.min_cycles": cfg.timing.min_cycles}
     for key, value in positive.items():
         if not value > 0:
             raise UserError(f"{name}: {key} must be more than 0")
     shares = {"probing.min_failed_share": cfg.probing.min_failed_share,
               "narrowing.max_answered_share": cfg.narrowing.max_answered_share,
-              "narrowing.min_focus_share": cfg.narrowing.min_focus_share}
+              "narrowing.min_focus_share": cfg.narrowing.min_focus_share,
+              "timing.min_pause_share": cfg.timing.min_pause_share,
+              "timing.min_timed_share": cfg.timing.min_timed_share}
     for key, value in shares.items():
         if not 0 <= value <= 1:
             raise UserError(f"{name}: {key} must be between 0 and 1 (0.7 means 70%)")
     if cfg.window_hours > cfg.lookback_hours:
         raise UserError(f"{name}: window_hours cannot be longer than lookback_hours")
+    t = cfg.timing
+    if t.pause_max_seconds < t.pause_min_seconds:
+        raise UserError(f"{name}: timing.pause_max_seconds cannot be less than timing.pause_min_seconds")
+    if t.pause_min_seconds < t.burst_gap_seconds:
+        raise UserError(f"{name}: timing.pause_min_seconds cannot be less than timing.burst_gap_seconds: a gap "
+                        "that short does not end a burst, so it is never a pause")
     for key, states in (("probing.zeek_failed_states", cfg.probing.zeek_failed_states),
                         ("narrowing.zeek_answered_states", cfg.narrowing.zeek_answered_states)):
         if not states or not all(s.isalnum() for s in states):

@@ -56,8 +56,31 @@ def _service(s: dict) -> str:
     return f"{s['host']} {port}"
 
 
-def _finding_lines(f: dict, map_file: str = "") -> list[str]:
-    """One finding. ``map_file``: the Explorer page that draws this source, when there is one."""
+def _band(st: dict) -> str:
+    """The pause band of the timing signal, as in "20 to 35 second"."""
+    return f"{st['timing']['pause_min_seconds']:g} to {st['timing']['pause_max_seconds']:g} second"
+
+
+def _timing_rows(f: dict, st: dict) -> list[str]:
+    """The timing rows of a finding: what signal 3 measured, or why it could not."""
+    t = f["timing"]
+    if t["status"] != "agentic":
+        why = f"not evaluated: {t['reason']}"
+        return [f"| Burst count | {why} |", f"| Typical pause length | {why} |"]
+    # sessions without a start time are never timed, so say when the count leaves some out
+    part = ("" if t["sessions_timed"] >= f["sessions"] else
+            f", counted over the {t['sessions_timed']:,} of its {f['sessions']:,} sessions that have a start time")
+    return [f"| Burst count | {_n(t['bursts'], 'short burst')} ({st['timing']['max_burst_sessions']} sessions or "
+            f"fewer), each followed by a {_band(st)} pause, of {_n(t['bursts_all'], 'burst')} in all{part} |",
+            f"| Typical pause length | {t['typical_pause_seconds']:g} seconds (median of those pauses) |",
+            f"| Timing fired in | the {st['window_hours']:g} hours from {_when(t['window_start'])}: "
+            f"{_n(t['window_bursts'], 'such burst')}, and {t['window_pause_share']:.0%} of all the pauses in that "
+            "window in the band |"]
+
+
+def _finding_lines(f: dict, st: dict, map_file: str = "") -> list[str]:
+    """One finding. ``st``: the run's settings. ``map_file``: the Explorer page that draws this
+    source, when there is one."""
     methods = "; ".join(f"{START_METHOD_TEXT.get(k, k)} ({n:,} sessions)" for k, n in f["start_times"].items())
     lines = [f"### {f['source']}: {_tier(f)}. {f['label']}", "",
              "| | |", "|---|---|",
@@ -71,8 +94,7 @@ def _finding_lines(f: dict, map_file: str = "") -> list[str]:
              f"| Narrowing start | {_when(f['narrowing_start'])} |",
              f"| After narrowing | {f['focus_share']:.0%} of its sessions went to services that answered |",
              f"| Hosts hit | {', '.join(f['hosts_hit'])} |",
-             f"| Burst count | {f['timing']} |",
-             f"| Typical pause length | {f['timing']} |",
+             *_timing_rows(f, st),
              f"| Campaign span | {_span(f['campaign_hours'])}, {_when(f['first_seen'])} to "
              f"{_when(f['last_seen'])}, {f['sessions']:,} sessions |",
              f"| Probe start to first vulnerability hit | {f['threat_evidence']} |",
@@ -104,23 +126,39 @@ def markdown(res: dict) -> str:
     # the Explorer page written next to the report, if any: {"file", "sources_drawn", "findings_drawn"}
     ex = res.get("explorer") or {}
     map_file = ex.get("file", "") if ex.get("sources_drawn") else ""
-    if found:
-        lines += [f"{_n(len(found), 'outside source')} swept your hosts and then returned only to the "
-                  "services that answered. That is how agentic, AI-driven pentest tools behave.", ""]
-        for i, f in enumerate(found):
-            lines += _finding_lines(f, map_file if i < ex.get("findings_drawn", 0) else "")
-    else:
-        lines += ["No outside source showed a sweep followed by narrowing.", ""]
-    swept_only = det["probing_sources"] - len(found)
+    st = res["settings"]
+    agentic = sum(1 for f in found if f["level"] >= 1)
+    if agentic:
+        lines += [f"{_n(agentic, 'outside source')} swept your hosts, returned only to the services that answered, "
+                  f"and worked in short bursts separated by {_band(st)} pauses, the time a model takes to decide "
+                  "its next step. That is how agentic, AI-driven pentest tools behave.", ""]
+    if len(found) > agentic:
+        lines += [f"{_n(len(found) - agentic, 'outside source')} swept your hosts and then returned only to the "
+                  "services that answered, but the sessions have no start time, so the pace could not be "
+                  "checked. That is reported as tier 0.", ""]
+    if not found:
+        lines += ["No outside source showed a sweep, then narrowing, at the pace of an agentic tool.", ""]
+    for i, f in enumerate(found):
+        lines += _finding_lines(f, st, map_file if i < ex.get("findings_drawn", 0) else "")
+    other_pace = det["narrowing_sources"] - len(found)
+    if other_pace > 0:
+        lines += [f"{_n(other_pace, 'other source')} swept and then narrowed, but not in short bursts and "
+                  f"{_band(st)} pauses. That looks like a scanner following up on what it found, or a person at "
+                  "work, and is not flagged.", ""]
+    swept_only = det["probing_sources"] - det["narrowing_sources"]
     if swept_only > 0:
         lines += [f"{_n(swept_only, 'other source')} swept many hosts or ports and did not narrow. That "
                   "looks like plain scanning and is not flagged.", ""]
     if map_file:
         lines += [f"[Open the Explorer]({map_file}) to see every sweep on a map of your subnets, with the "
                   "services each flagged source came back to.", ""]
-    lines += ["### What the tiers mean", "",
+    lines += ["### What the tiers and levels mean", "",
+              "- **Level 1. Agentic behaviour.** Probing, narrowing and timing all fired: a sweep, a return to "
+              f"what answered, and short bursts separated by {_band(st)} pauses.",
               "- **Tier 0. Sweep and narrow seen, timing unavailable.** Probing and narrowing fired. The "
-              "timing signal (short bursts separated by 20 to 35 second pauses) could not be evaluated.",
+              "timing could not be checked, because the sessions have no start time. A source whose timing "
+              "was checked and did not fit is not flagged at all.",
+              "- **Levels 2 and 3** add exploit evidence from Palo Alto threat logs, which are not scored yet.",
               "- **Threat logs not provided** means no exploit evidence could be attached. It does not "
               "mean there were no exploit attempts. Threat logs that were read are not scored yet either.", "",
               "### Known limitations", ""]
@@ -135,7 +173,7 @@ def markdown(res: dict) -> str:
     dup = res["duplicates_removed"]
     lines += ["", f"Duplicates removed: {dup['exact']:,} exact, {dup['seen_by_two_sensors']:,} sessions seen "
               "by two sensors and counted once.", "", "## Settings used", ""]
-    st = res["settings"]
+    tm = st["timing"]
     ping = ("a ping with no reply counts as failed in either log" if st["probing"]["zeek_icmp_by_reply"]
             else "a ping in a Zeek log counts as neither failed nor answered")
     lines += [f"- Internal ranges: {', '.join(st['internal_nets'] + [n['cidr'] for n in res['networks']])}",
@@ -150,6 +188,11 @@ def markdown(res: dict) -> str:
               f"(Zeek states {', '.join(st['narrowing']['zeek_answered_states'])}), starting within "
               f"{st['narrowing']['max_start_delay_minutes']:g} minutes of the sweep, "
               f"{st['narrowing']['min_focus_share']:.0%}+ of later sessions to answered services.",
+              f"- Timing: a gap of more than {tm['burst_gap_seconds']:g} seconds between session starts ends a "
+              f"burst. In one window, {tm['min_cycles']}+ bursts of {tm['max_burst_sessions']} sessions or fewer, "
+              f"each followed by a {_band(st)} pause, and {tm['min_pause_share']:.0%}+ of all the window's pauses "
+              f"in that band. A source's pace is only ruled out when {tm['min_timed_share']:.0%}+ of its sessions "
+              "have a start time.",
               f"- Never flagged: {', '.join(st['allowlist'] + [k['cidr'] for k in res['known_scanners']]) or 'nothing listed'}."]
     if any(i["format"] == "paloalto" for i in res["inputs"]):
         pa = st["paloalto"]

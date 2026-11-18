@@ -1,4 +1,5 @@
-"""Probing and narrowing from Zeek conn.log, end to end into the report."""
+"""The three signals from Zeek conn.log, end to end into the report. (Timing has tests of its own in
+test_timing.py.)"""
 import io
 import json
 import os
@@ -9,7 +10,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pentaiwatch import config, engine
 from pentaiwatch.cli import main
 from pentaiwatch.config import Config
-from pentaiwatch.detect import TIER_0, detect
+from pentaiwatch.detect import LEVEL_1, detect
 from pentaiwatch.errors import MissingField, UserError
 from pentaiwatch.load import load
 from pentaiwatch.pipeline import run
@@ -41,7 +42,7 @@ class ThreeSourceTests(Base):
         got = self.detect(sample.sessions())
         self.assertEqual([f.source for f in got.findings], [sample.AGENT])
         f = got.findings[0]
-        self.assertEqual((f.level, f.label), (0, TIER_0))
+        self.assertEqual((f.level, f.label), (1, LEVEL_1))
         self.assertEqual(f.log_sources, ["zeek"])
         self.assertEqual(list(f.start_times), ["zeek_ts"])
         self.assertEqual((f.services_probed, f.hosts_probed, f.ports_probed), (300, 30, 10))
@@ -50,7 +51,7 @@ class ThreeSourceTests(Base):
         self.assertEqual(f.hosts_hit, sorted({h for h, _ in sample.NARROWED}))
         self.assertLess(f.probe_start, f.narrowing_start)
         # the scanner swept (signal 1) but never narrowed; the client did neither
-        self.assertEqual(got.probing_sources, 2)
+        self.assertEqual((got.probing_sources, got.narrowing_sources), (2, 1))
         self.assertEqual(got.outside_sources, 3)
 
     def test_zeek_only_finding_says_threat_logs_not_provided(self):
@@ -201,14 +202,14 @@ class EndToEndTests(Base):
         with redirect_stdout(out), redirect_stderr(err):
             code = main(["analyze", self.folder(), "-o", self.path("out"), "--workdir", self.dir])
         self.assertEqual(code, 0, err.getvalue())
-        self.assertIn(f"{sample.AGENT}  tier 0", out.getvalue())
+        self.assertIn(f"{sample.AGENT}  level 1: {LEVEL_1}", out.getvalue())
         with open(self.path("out/results.json")) as fh:
             res = json.load(fh)
         self.assertEqual([f["source"] for f in res["detection"]["findings"]], [sample.AGENT])
         with open(self.path("out/report.md")) as fh:
             md = fh.read()
         self.assertIn("## Agentic activity", md)
-        self.assertIn(f"### {sample.AGENT}: Tier 0. {TIER_0}", md)
+        self.assertIn(f"### {sample.AGENT}: Level 1. {LEVEL_1}", md)
         self.assertIn("| 10.10.1.10 443/tcp | DMZ |", md)
         self.assertIn("threat logs not provided", md)
         self.assertIn("proxies or Tor", md)

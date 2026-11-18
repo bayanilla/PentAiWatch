@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Browser check for the Explorer page (explorer.html).
 
-Opens each run's explorer.html in headless Chromium and walks what the page offers: the 3D overview, a
+Opens each run's explorer.html in headless Chromium and walks what the page offers: the 3D overview, every
 source, a host, the Flat view and back to 3D, then the report's link to a source. A page fails when
 
   * it throws or logs a console error at any step, or cannot unpack its data, or
@@ -9,13 +9,14 @@ source, a host, the Flat view and back to 3D, then the report's link to a source
     holds (the more-than-1,024-bodies bug VulnScope MAX fixed in the renderer this page uses), or
   * a selected source does not get one dashed beam per subnet it swept and one solid beam per drawn
     host it kept coming back to, in 3D and in Flat alike, or
+  * a source's panel does not give its tier or level, or the reason it is not flagged, or
   * the report's "Show this source on the map" link does not open the map on that source, or
   * a run in which nothing swept does not say so.
 
 What the page should draw is worked out here from the data packed inside it, not asked of the page.
 
 Usage:
-  python scripts/smoke/explorer_smoke.py --samples WORKDIR   write the tests' sample logs four ways into
+  python scripts/smoke/explorer_smoke.py --samples WORKDIR   write the tests' sample logs five ways into
                                                              WORKDIR, analyze them, then check the pages
   python scripts/smoke/explorer_smoke.py RUN [RUN ...]       check existing output folders (or explorer.html files)
   python scripts/smoke/explorer_smoke.py --samples WORKDIR --build-only
@@ -54,11 +55,13 @@ def big_sweep() -> list[dict]:
 
 def build_samples(work: Path) -> list[Path]:
     """The tests' three-source sample as Zeek only and as both logs, the same with a 1,500-host sweep added,
-    and a run in which nothing swept. Each is analyzed with the command line, as an analyst would."""
+    the same with a source that sweeps and narrows at another pace than an agent's (drawn, not flagged), and
+    a run in which nothing swept. Each is analyzed with the command line, as an analyst would."""
     cases = {
         "zeek_only": (sample.sessions(), False),
         "both_logs": (sample.sessions(), True),
         "many_hosts": (sorted(sample.sessions() + big_sweep(), key=lambda s: s["ts"]), False),
+        "other_pace": (sorted(sample.sessions() + sample.other_pace(), key=lambda s: s["ts"]), False),
         "nothing_swept": (sample.client(random.Random(3)), False),
     }
     runs = []
@@ -85,14 +88,23 @@ def explorer_file(run: Path) -> Path:
 
 def expected(data: dict) -> dict:
     """What the page should draw, from the data inside it: per source, a sweep beam for each subnet it
-    swept that has a ring, and a solid beam for each drawn host it kept coming back to."""
+    swept that has a ring, and a solid beam for each drawn host it kept coming back to (flagged sources
+    only: a source that is not flagged has no solid beams). And what each source's panel should say."""
     drawn = {h["ip"] for h in data["hosts"]}
-    beams = {}
+    beams, says = {}, {}
     for s in data["sources"]:
         beams[s["ip"]] = {"sweep": sum(1 for n in s["nets"] if data["subnets"][n[0]]["drawn"]),
                           "narrowed": len({v[0] for v in s.get("services", [])} & drawn)}
+        if s["flagged"]:
+            verdict = f"Level {s['level']}" if s["level"] else "Tier 0"
+            body = ["Timing", "Not evaluated" if s["timing"]["status"] != "agentic" else "Typical pause"]
+        else:
+            # the reason is checked by words only its paragraph has (the verdict line repeats the label)
+            verdict = "Not flagged"
+            body = ["Why it is not flagged", "The timing signal asks for" if s["narrowed"] else "looks like plain scanning"]
+        says[s["ip"]] = {"verdict": [verdict, s["label"]], "body": body}
     return {"sources": len(data["sources"]), "hosts": len(data["hosts"]),
-            "subnets": sum(1 for n in data["subnets"] if n["drawn"]), "beams": beams,
+            "subnets": sum(1 for n in data["subnets"] if n["drawn"]), "beams": beams, "says": says,
             "narrowed": sum(b["narrowed"] for b in beams.values())}
 
 
@@ -137,6 +149,15 @@ def walk(page_path: Path, browser, shots: Path, problems: list[str]) -> None:
         if beams and (got.get("selSweep"), got.get("selNarrowed")) != (beams["sweep"], beams["narrowed"]):
             problems.append(f"{name}: {ip} should have {beams['sweep']} sweep and {beams['narrowed']} solid beams, "
                             f"drew {got.get('selSweep')} and {got.get('selNarrowed')}")
+        says = want["says"].get(ip)
+        if says:                                   # a source: its tier or level, and why
+            verdict, body = page.inner_text("#panel .verdict"), page.inner_text("#panel")
+            for text in says["verdict"]:
+                if text not in verdict:
+                    problems.append(f"{name}: the panel of {ip} should say {text!r}, says {verdict!r}")
+            for text in says["body"]:
+                if text not in body:
+                    problems.append(f"{name}: the panel of {ip} does not say {text!r}")
 
     page.goto(page_path.resolve().as_uri())
     # the data is unpacked in the background (vf_data.js); the map starts once it is there
@@ -166,8 +187,10 @@ def walk(page_path: Path, browser, shots: Path, problems: list[str]) -> None:
             problems.append(f"3d-overview: {want['narrowed']} solid beams expected, {s.get('beams', {}).get('narrowed')} drawn")
 
     first = next(iter(want["beams"]))
-    page.evaluate("ip => PWExplorer.select(ip)", first)
-    selected("3d-source", step("3d-source"), first, want["beams"][first])
+    for i, ip in enumerate(want["beams"]):         # every source: flagged ones first, as in the report
+        page.evaluate("ip => PWExplorer.select(ip)", ip)
+        name = "3d-source" + (f"-{i + 1}" if i else "")
+        selected(name, step(name, SETTLE_MS if i < 3 else 400), ip, want["beams"][ip])
     host = page.evaluate("window.VF_DATA.hosts[0].ip")
     page.evaluate("ip => PWExplorer.select(ip)", host)
     selected("3d-host", step("3d-host"), host)

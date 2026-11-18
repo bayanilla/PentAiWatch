@@ -15,13 +15,19 @@ How it works, in order:
                             the completed sessions.
 4. ``_probing``             signal 1, per scoring window.
 5. ``_narrowing``           signal 2, for the windows where probing fired.
-6. ``_sweeps``              per source, the one window it is judged by.
-7. ``_findings``            one finding per source, from the window where both fired.
+6. ``_timing``              signal 3, for the sources where narrowing fired: their sessions cut
+                            into bursts, and whether the bursts and pauses keep an agent's pace.
+7. ``_sweeps``              per source, the one window it is judged by, and whether it is flagged.
+8. ``_findings``            one finding per flagged source.
+
+A source is flagged when probing and narrowing fired and timing either fired too (level 1) or
+could not be judged because its sessions have no start time (tier 0). A source that swept and
+narrowed at some other pace is not flagged; ``Detection.narrowing_sources`` counts it.
 
 The scoring tables (``pw_sessions``, ``pw_svc``, ``pw_probe``, ``pw_narrow_svc``, ``pw_narrow``,
-``pw_sweep``) exist only while ``detect`` runs. A caller that needs more than the findings, such
-as the Explorer (explore.py), passes ``while_scored``: it is called with the connection and the
-finished ``Detection`` just before the tables are dropped.
+``pw_burst``, ``pw_timing``, ``pw_pace``, ``pw_sweep``) exist only while ``detect`` runs. A caller
+that needs more than the findings, such as the Explorer (explore.py), passes ``while_scored``: it
+is called with the connection and the finished ``Detection`` just before the tables are dropped.
 
 Scoring is per source address. A campaign that rotates through proxies is split across several
 findings; each finding carries the services, hosts and times a later grouping step (by targeted
@@ -30,8 +36,7 @@ the signals.
 
 Zeek conn.log and Palo Alto traffic logs are scored alone or together: step 2 turns each into the
 same shape, and a session both recorded has already been counted once by the de-duplication in
-store.py. The timing signal and the threat-log levels are not built yet, so every finding is
-tier 0.
+store.py. The threat-log levels (2 and 3) are not built yet.
 """
 from __future__ import annotations
 
@@ -40,15 +45,19 @@ import ipaddress
 import os
 import tempfile
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from . import engine
 from .config import Config
 from .netmap import NetMap
 from .scanners import Known
+from .schema import START_END_MINUS_ELAPSED, START_FIELD, START_ZEEK_TS
 
 TIER_0 = "Sweep and narrow seen, timing unavailable"
+LEVEL_1 = "Agentic behaviour"
 MAX_SERVICES_LISTED = 25
+# The start times that are known to be session STARTS. Timing reads these and nothing else.
+TIMED = (START_ZEEK_TS, START_FIELD, START_END_MINUS_ELAPSED)
 
 
 @dataclass
@@ -63,9 +72,23 @@ class Service:
 
 
 @dataclass
+class Pace:
+    """What the timing signal found for a flagged source."""
+    status: str                  # 'agentic': signal 3 fired. 'unavailable': it could not be judged
+    reason: str                  # why it could not be judged ('' when it fired)
+    sessions_timed: int          # its sessions whose START time is known; only these are ever timed
+    bursts: int                  # short bursts, each followed by a pause in the band, in the lookback
+    bursts_all: int              # all its bursts in the lookback
+    typical_pause_seconds: float | None      # median of the pauses that follow those short bursts
+    window_start: str            # the scoring window in which signal 3 fired with the most such bursts
+    window_bursts: int           # how many of them that window holds
+    window_pause_share: float | None         # the share of ALL that window's pauses that are in the band
+
+
+@dataclass
 class Finding:
     source: str
-    level: int                   # 0 = tier 0; 1-3 arrive with the timing signal and threat logs
+    level: int                   # 0 = tier 0, 1 = agentic behaviour; 2 and 3 arrive with the threat logs
     label: str
     log_sources: list[str]       # kinds of log the finding was built from
     start_times: dict[str, int]  # how session start times were found -> sessions
@@ -85,7 +108,7 @@ class Finding:
     first_seen: str
     last_seen: str
     campaign_hours: float
-    timing: str                  # why the timing signal has no result
+    timing: Pace
     threat_evidence: str
     notes: list[str] = field(default_factory=list)    # what a reader should know about this finding's data
 
@@ -100,16 +123,19 @@ class Detection:
     outside_sources: int = 0
     candidates: int = 0          # sources that tried enough services to be worth scoring
     probing_sources: int = 0     # sources where signal 1 fired (with or without narrowing)
+    narrowing_sources: int = 0   # sources where signals 1 and 2 fired (whatever their timing)
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
-SCORING_TABLES = ("pw_ip", "pw_sessions", "pw_svc", "pw_probe", "pw_narrow_svc", "pw_narrow", "pw_sweep")
+SCORING_TABLES = ("pw_ip", "pw_sessions", "pw_svc", "pw_probe", "pw_narrow_svc", "pw_narrow", "pw_burst",
+                  "pw_timing", "pw_pace", "pw_sweep")
 
 
 def detect(con, cfg: Config, *, while_scored=None) -> Detection:
-    """Flag outside sources whose sessions in ``flows`` show a sweep followed by narrowing.
+    """Flag outside sources whose sessions in ``flows`` show a sweep, then narrowing, at the pace of
+    an agentic tool (or at a pace that cannot be known, because the sessions have no start time).
 
     ``while_scored(con, detection)``, when given, is called once the findings are built and before
     the scoring tables are dropped. It is not called when there was nothing to score."""
@@ -145,8 +171,9 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
         out.candidates = _services(con, cfg)
         out.probing_sources = _probing(con, cfg)
         _narrowing(con, cfg)
-        _sweeps(con)
-        out.findings = _findings(con, nm)
+        _timing(con, cfg)
+        out.narrowing_sources = _sweeps(con)
+        out.findings = _findings(con, cfg, nm)
         if while_scored is not None:
             while_scored(con, out)
     finally:
@@ -366,37 +393,136 @@ def _narrowing(con, cfg: Config) -> None:
                 {"window": cfg.window_hours * 3600.0, "min_focus_share": float(n.min_focus_share)})
 
 
-# -- 6. the window each source is judged by -------------------------------------------------
-def _sweeps(con) -> None:
-    """Table pw_sweep(src_ip, k, flagged): for every source where probing fired, the one window it
-    is judged by. Windows overlap, so a sweep can fire in two of them. A window where narrowing
-    fired too comes first (the source is flagged); then the window that holds most of the sweep;
-    then the earliest."""
+# -- 6. signal 3: timing --------------------------------------------------------------------
+def _timing(con, cfg: Config) -> None:
+    """Tables pw_burst, pw_timing and pw_pace, for the sources where narrowing fired.
+
+    pw_burst   The source's sessions with a known START time, in order, cut into bursts: a gap of
+               more than ``burst_gap_seconds`` between two starts ends a burst. One row per burst:
+               its first and last start, its sessions, the pause that follows it (from its last
+               start to the next burst's first; none after the last burst) and the half window
+               that pause begins in.
+    pw_timing  The scoring windows in which signal 3 fired: ``min_cycles`` or more short bursts
+               (``max_burst_sessions`` sessions at most), each followed by a pause of
+               ``pause_min_seconds`` to ``pause_max_seconds``, and at least ``min_pause_share`` of
+               ALL the window's pauses inside that band. Nothing is asked of the spacing inside a
+               burst, and the pauses need not be alike.
+    pw_pace    One row per source. 'agentic': signal 3 fired in a window. 'unavailable': it did
+               not, and fewer than ``min_timed_share`` of the source's sessions have a known
+               start time (none at all, in the usual case), so the pace could not be judged.
+               'other': the source was seen nearly whole and does not keep that pace.
+
+    A session whose time is an END time (start_method 'none') is never timed: long and aged-out
+    sessions would smear the bursts."""
+    t = cfg.timing
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE pw_burst AS
+        WITH timed AS (
+            SELECT src_ip, start_ts, seq, epoch(start_ts) - epoch(lag(start_ts) OVER w) AS gap
+            FROM pw_sessions
+            WHERE list_contains(CAST($timed AS VARCHAR[]), start_method)
+              AND src_ip IN (SELECT src_ip FROM pw_narrow)
+            WINDOW w AS (PARTITION BY src_ip ORDER BY start_ts, seq)),
+        numbered AS (
+            SELECT src_ip, start_ts,
+                   sum(CASE WHEN gap IS NULL OR gap > $burst_gap THEN 1 ELSE 0 END)
+                       OVER (PARTITION BY src_ip ORDER BY start_ts, seq ROWS UNBOUNDED PRECEDING) AS burst
+            FROM timed),
+        bursts AS (
+            SELECT src_ip, burst, min(start_ts) AS first_ts, max(start_ts) AS last_ts, count(*) AS sessions
+            FROM numbered GROUP BY src_ip, burst)
+        SELECT src_ip, burst, first_ts, last_ts, sessions,
+               epoch(lead(first_ts) OVER (PARTITION BY src_ip ORDER BY burst)) - epoch(last_ts) AS pause,
+               CAST(floor(epoch(last_ts) / $step) AS BIGINT) AS bucket
+        FROM bursts""",
+                {"timed": list(TIMED), "burst_gap": float(t.burst_gap_seconds), "step": cfg.window_hours * 3600 / 2})
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE pw_timing AS
+        SELECT b.src_ip, k, count(*) AS pauses,
+               count(*) FILTER (b.pause BETWEEN $lo AND $hi) AS in_band,
+               count(*) FILTER (b.sessions <= $max_burst AND b.pause BETWEEN $lo AND $hi) AS cycles
+        FROM pw_burst b, unnest([b.bucket, b.bucket - 1]) AS w(k)
+        WHERE b.pause IS NOT NULL
+        GROUP BY b.src_ip, k
+        HAVING cycles >= $min_cycles AND in_band >= $min_pause_share * count(*)""",
+                {"lo": float(t.pause_min_seconds), "hi": float(t.pause_max_seconds),
+                 "max_burst": int(t.max_burst_sessions), "min_cycles": int(t.min_cycles),
+                 "min_pause_share": float(t.min_pause_share)})
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE pw_pace AS
+        WITH seen AS (
+            SELECT src_ip, count(*) AS sessions,
+                   count(*) FILTER (list_contains(CAST($timed AS VARCHAR[]), start_method)) AS timed
+            FROM pw_sessions WHERE src_ip IN (SELECT src_ip FROM pw_narrow) GROUP BY src_ip)
+        SELECT src_ip, sessions, timed,
+               CASE WHEN src_ip IN (SELECT src_ip FROM pw_timing) THEN 'agentic'
+                    WHEN timed = 0 OR timed < $min_timed_share * sessions THEN 'unavailable'
+                    ELSE 'other' END AS status
+        FROM seen""", {"timed": list(TIMED), "min_timed_share": float(t.min_timed_share)})
+
+
+def _pace(con, cfg: Config, src: str, status: str, sessions: int, timed: int) -> Pace:
+    """The timing evidence of one flagged source, for its finding."""
+    t = cfg.timing
+    bursts_all, cycles, typical = con.execute("""
+        SELECT count(*), count(*) FILTER (sessions <= $max_burst AND pause BETWEEN $lo AND $hi),
+               median(pause) FILTER (sessions <= $max_burst AND pause BETWEEN $lo AND $hi)
+        FROM pw_burst WHERE src_ip = $src""",
+                                              {"src": src, "max_burst": int(t.max_burst_sessions),
+                                               "lo": float(t.pause_min_seconds),
+                                               "hi": float(t.pause_max_seconds)}).fetchone()
+    best = con.execute("SELECT k, cycles, pauses, in_band FROM pw_timing WHERE src_ip = ? "
+                       "ORDER BY cycles DESC, k LIMIT 1", [src]).fetchone()
+    if status == "agentic":
+        reason = ""
+    elif not timed:
+        reason = "none of its sessions has a start time"
+    else:
+        reason = (f"only {timed:,} of its {sessions:,} sessions have a start time, and those do not show "
+                  "the bursts and pauses")
+    step = cfg.window_hours * 3600 / 2
+    return Pace(status=status, reason=reason, sessions_timed=int(timed), bursts=int(cycles),
+                bursts_all=int(bursts_all), typical_pause_seconds=round(typical, 1) if typical is not None else None,
+                window_start=_iso(datetime.fromtimestamp(best[0] * step, tz=timezone.utc)) if best else "",
+                window_bursts=int(best[1]) if best else 0,
+                window_pause_share=round(best[3] / best[2], 3) if best else None)
+
+
+# -- 7. the window each source is judged by -------------------------------------------------
+def _sweeps(con) -> int:
+    """Table pw_sweep(src_ip, k, narrowed, flagged): for every source where probing fired, the one
+    window it is judged by. Windows overlap, so a sweep can fire in two of them. A window where
+    narrowing fired too comes first; then the window that holds most of the sweep; then the
+    earliest. ``flagged``: narrowing fired there and the source's pace is agentic or could not be
+    judged. Returns how many sources narrowed."""
     con.execute("""
         CREATE OR REPLACE TEMP TABLE pw_sweep AS
-        SELECT p.src_ip, p.k, w.src_ip IS NOT NULL AS flagged
-        FROM pw_probe p LEFT JOIN pw_narrow w USING (src_ip, k)
-        QUALIFY row_number() OVER (PARTITION BY p.src_ip ORDER BY flagged DESC, p.services DESC, p.k) = 1""")
+        SELECT p.src_ip, p.k, w.src_ip IS NOT NULL AS narrowed,
+               w.src_ip IS NOT NULL AND coalesce(t.status IN ('agentic', 'unavailable'), false) AS flagged
+        FROM pw_probe p LEFT JOIN pw_narrow w USING (src_ip, k) LEFT JOIN pw_pace t ON t.src_ip = p.src_ip
+        QUALIFY row_number() OVER (PARTITION BY p.src_ip ORDER BY narrowed DESC, p.services DESC, p.k) = 1""")
+    return con.execute("SELECT count(*) FROM pw_sweep WHERE narrowed").fetchone()[0]
 
 
-# -- 7. findings ----------------------------------------------------------------------------
-def _findings(con, nm: NetMap) -> list[Finding]:
-    """One finding per source: the window where probing and narrowing both fired that holds the
-    largest sweep (the earliest such window on a tie), plus everything it did in the lookback (so
-    a campaign that pauses and resumes stays one finding)."""
+# -- 8. findings ----------------------------------------------------------------------------
+def _findings(con, cfg: Config, nm: NetMap) -> list[Finding]:
+    """One finding per flagged source: the window where probing and narrowing both fired that holds
+    the largest sweep (the earliest such window on a tie), plus everything it did in the lookback
+    (so a campaign that pauses and resumes stays one finding)."""
     rows = con.execute("""
         SELECT p.src_ip, p.k, p.probe_start, p.probe_end, p.services, p.hosts, p.ports, p.failed,
-               p.answered, w.narrowing_start, w.focus_share
+               p.answered, w.narrowing_start, w.focus_share, t.status, t.sessions, t.timed
         FROM pw_sweep s JOIN pw_probe p USING (src_ip, k) JOIN pw_narrow w USING (src_ip, k)
+        JOIN pw_pace t USING (src_ip)
         WHERE s.flagged ORDER BY p.src_ip""").fetchall()
     out = []
     threat_text = _threat_text(con)
-    for src, k, p_start, p_end, services, hosts, ports, failed, answered, n_start, focus in rows:
+    for src, k, p_start, p_end, services, hosts, ports, failed, answered, n_start, focus, status, n, timed in rows:
         svc_rows = con.execute("""
             SELECT dst_ip, dst_port, proto, answered, return_ts FROM pw_narrow_svc
             WHERE src_ip = ? AND k = ? ORDER BY answered DESC, dst_ip, dst_port""", [src, k]).fetchall()
-        n, first, last = con.execute(
-            "SELECT count(*), min(start_ts), max(start_ts) FROM pw_sessions WHERE src_ip = ?", [src]).fetchone()
+        first, last = con.execute(
+            "SELECT min(start_ts), max(start_ts) FROM pw_sessions WHERE src_ip = ?", [src]).fetchone()
         sensors = log_sources(con, src)
         stand_in = con.execute(
             "SELECT count(*) FROM pw_sessions WHERE src_ip = ? AND stand_in", [src]).fetchone()[0]
@@ -408,15 +534,16 @@ def _findings(con, nm: NetMap) -> list[Finding]:
             "SELECT start_method, count(*) FROM pw_sessions WHERE src_ip = ? GROUP BY 1 ORDER BY 1", [src]).fetchall())
         listed = [Service(host=h, port=port, proto=proto, network=nm.name(h), sessions=int(c),
                           first_return=_iso(ts)) for h, port, proto, c, ts in svc_rows[:MAX_SERVICES_LISTED]]
+        agentic = status == "agentic"
         out.append(Finding(
-            source=src, level=0, label=TIER_0, log_sources=sensors, start_times=methods,
-            probe_start=_iso(p_start), probe_end=_iso(p_end), services_probed=int(services),
+            source=src, level=1 if agentic else 0, label=LEVEL_1 if agentic else TIER_0, log_sources=sensors,
+            start_times=methods, probe_start=_iso(p_start), probe_end=_iso(p_end), services_probed=int(services),
             hosts_probed=int(hosts), ports_probed=int(ports), failed_share=round(failed / services, 3),
             services_answered=int(answered), narrowing_start=_iso(n_start), focus_share=round(focus, 3),
             services=listed, services_total=len(svc_rows), hosts_hit=sorted({r[0] for r in svc_rows}),
             sessions=int(n), first_seen=_iso(first), last_seen=_iso(last),
             campaign_hours=round((last - first).total_seconds() / 3600, 2),
-            timing="not evaluated: the timing signal is not built yet",
+            timing=_pace(con, cfg, src, status, int(n), int(timed)),
             threat_evidence=threat_text, notes=notes))
     return sorted(out, key=lambda f: (-f.level, -f.sessions, f.source))
 

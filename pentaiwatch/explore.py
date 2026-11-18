@@ -10,8 +10,9 @@ Two steps:
              ``pentaiwatch/static``, so the page opens offline and straight from disk.
 
 What is drawn is what the report says. A source is drawn when the probing signal fired for it:
-the flagged ones with their finding, the others as "swept, did not narrow". Every number about a
-source's sweep is counted over the same window its finding uses (``pw_sweep`` in detect.py).
+the flagged ones with their finding, the others as "swept, did not narrow" or, when they narrowed
+at some other pace, as "swept and narrowed, not at an agent's pace". Every number about a source's
+sweep is counted over the same window its finding uses (``pw_sweep`` in detect.py).
 
 Big runs are cut to what a browser draws comfortably: the ``MAX_SOURCES`` largest sweeps (flagged
 sources first), the ``MAX_SUBNETS`` subnets that matter most and ``MAX_HOSTS`` hosts in them. The
@@ -45,6 +46,7 @@ MAX_SUBNETS = 120       # subnets drawn as rings
 MAX_HOSTS = 2000        # hosts drawn as dots
 MAX_SERVICES = 200      # narrowed services listed per source
 SWEEP_ONLY = "Swept, did not narrow"
+OTHER_PACE = "Swept and narrowed, not at an agent's pace"
 VIEW_TABLES = ("pw_view_src", "pw_view_sh", "pw_view_nsvc", "pw_view_host", "pw_view_h", "pw_view_net",
                "pw_view_drawn")
 STATES = ("narrowed", "answered", "tried")          # a drawn host's state, most telling first
@@ -67,7 +69,7 @@ def subnet_of(ip: str) -> str:
 def empty() -> dict:
     """The scene of a run in which no source swept (or nothing could be scored)."""
     return {"window": [None, None], "subnets": [], "hosts": [], "sources": [],
-            "counts": {"inbound_sessions": 0, "outside_sources": 0, "sweeping": 0, "flagged": 0,
+            "counts": {"inbound_sessions": 0, "outside_sources": 0, "sweeping": 0, "narrowed": 0, "flagged": 0,
                        "sources_drawn": 0, "hosts_tried": 0, "hosts_drawn": 0, "subnets_tried": 0,
                        "subnets_drawn": 0}}
 
@@ -96,19 +98,22 @@ def collect(con, cfg: Config, detection: Detection) -> dict:
     out = empty()
     out["window"] = [detection.lookback_start, detection.lookback_end]
     out["counts"].update(inbound_sessions=detection.inbound_sessions, outside_sources=detection.outside_sources,
-                         sweeping=detection.probing_sources, flagged=len(detection.findings))
+                         sweeping=detection.probing_sources, narrowed=detection.narrowing_sources,
+                         flagged=len(detection.findings))
     findings = {f.source: f for f in detection.findings}
     drawn = [f.source for f in detection.findings[:MAX_SOURCES]]          # most serious first, as in the report
+    # then the sources that are not flagged: those that narrowed first, then the largest sweeps
     drawn += [r[0] for r in con.execute("""
         SELECT s.src_ip FROM pw_sweep s JOIN pw_probe p USING (src_ip, k)
-        WHERE NOT s.flagged ORDER BY p.services DESC, s.src_ip LIMIT ?""", [MAX_SOURCES - len(drawn)]).fetchall()]
+        WHERE NOT s.flagged ORDER BY s.narrowed DESC, p.services DESC, s.src_ip LIMIT ?""",
+                                        [MAX_SOURCES - len(drawn)]).fetchall()]
     if not drawn:
         return out
     nm = NetMap(cfg.networks)
     try:
         _tables(con, drawn)
         out["counts"].update(_draw(con, out, nm))
-        out["sources"] = _sources(con, findings)
+        out["sources"] = _sources(con, cfg, findings)
         out["counts"]["sources_drawn"] = len(out["sources"])
     finally:
         for table in VIEW_TABLES:
@@ -122,7 +127,7 @@ def _tables(con, drawn: list[str]) -> None:
     subnet (pw_view_host) and one row per host over all drawn sources (pw_view_h)."""
     con.execute("""
         CREATE OR REPLACE TEMP TABLE pw_view_src AS
-        SELECT s.src_ip, s.k, s.flagged, list_position(CAST($ips AS VARCHAR[]), s.src_ip) - 1 AS pos
+        SELECT s.src_ip, s.k, s.narrowed, s.flagged, list_position(CAST($ips AS VARCHAR[]), s.src_ip) - 1 AS pos
         FROM pw_sweep s WHERE list_contains(CAST($ips AS VARCHAR[]), s.src_ip)""", {"ips": drawn})
     con.execute("""
         CREATE OR REPLACE TEMP TABLE pw_view_sh AS
@@ -196,7 +201,22 @@ def _draw(con, out: dict, nm: NetMap) -> dict:
             "subnets_tried": int(subnets_tried), "subnets_drawn": len(out["subnets"])}
 
 
-def _sources(con, findings: dict) -> list[dict]:
+def _other_pace(con, cfg: Config) -> dict[str, dict]:
+    """For the drawn sources that narrowed and are not flagged: what they narrowed onto and the pace
+    they kept, which is why they are not flagged."""
+    t = cfg.timing
+    return {src: {"services_total": int(services), "bursts_all": int(bursts), "pauses": int(pauses),
+                  "pauses_in_band": int(in_band)}
+            for src, services, bursts, pauses, in_band in con.execute("""
+                SELECT d.src_ip, (SELECT count(*) FROM pw_narrow_svc n WHERE n.src_ip = d.src_ip AND n.k = d.k),
+                       count(b.burst), count(b.pause), count(*) FILTER (b.pause BETWEEN $lo AND $hi)
+                FROM pw_view_src d LEFT JOIN pw_burst b USING (src_ip)
+                WHERE d.narrowed AND NOT d.flagged GROUP BY d.src_ip, d.k""",
+                                                               {"lo": float(t.pause_min_seconds),
+                                                                "hi": float(t.pause_max_seconds)}).fetchall()}
+
+
+def _sources(con, cfg: Config, findings: dict) -> list[dict]:
     """One entry per drawn source: the evidence the report gives for it, and what the map needs to
     draw it (its sweep per drawn subnet, the drawn hosts it tried, the services it narrowed onto)."""
     nets: dict[int, list] = {}
@@ -224,14 +244,16 @@ def _sources(con, findings: dict) -> list[dict]:
     seen = {src: (int(n), first, last) for src, n, first, last in con.execute("""
         SELECT src_ip, count(*), min(start_ts), max(start_ts) FROM pw_sessions
         WHERE src_ip IN (SELECT src_ip FROM pw_view_src) GROUP BY src_ip""").fetchall()}
+    other_pace = _other_pace(con, cfg)
     out = []
-    for pos, src, p_start, p_end, n_services, n_hosts, n_ports, failed, answered in con.execute("""
-            SELECT d.pos, d.src_ip, p.probe_start, p.probe_end, p.services, p.hosts, p.ports, p.failed, p.answered
+    for pos, src, narrowed, p_start, p_end, n_services, n_hosts, n_ports, failed, answered in con.execute("""
+            SELECT d.pos, d.src_ip, d.narrowed, p.probe_start, p.probe_end, p.services, p.hosts, p.ports, p.failed,
+                   p.answered
             FROM pw_view_src d JOIN pw_probe p USING (src_ip, k) ORDER BY d.pos""").fetchall():
         f = findings.get(src)
         sessions, first, last = seen[src]
-        item = {"ip": src, "flagged": f is not None, "level": f.level if f else None,
-                "label": f.label if f else SWEEP_ONLY,
+        item = {"ip": src, "flagged": f is not None, "narrowed": bool(narrowed), "level": f.level if f else None,
+                "label": f.label if f else OTHER_PACE if narrowed else SWEEP_ONLY,
                 "log_sources": f.log_sources if f else log_sources(con, src),
                 "probe_start": _iso(p_start), "probe_end": _iso(p_end), "services_probed": int(n_services),
                 "hosts_probed": int(n_hosts), "ports_probed": int(n_ports),
@@ -244,6 +266,8 @@ def _sources(con, findings: dict) -> list[dict]:
             item.update({k: evidence[k] for k in ("narrowing_start", "focus_share", "start_times", "timing",
                                                   "threat_evidence", "notes")})
             item.update(services=mine[:MAX_SERVICES], services_total=len(mine), hosts_hit=len(f.hosts_hit))
+        elif narrowed:
+            item["pace"] = other_pace[src]
         item["nets"] = nets.get(pos, [])
         # hosts it tried in subnets that are not drawn
         item["hosts_elsewhere"] = int(n_hosts) - sum(n[1] for n in item["nets"])
@@ -299,6 +323,8 @@ def page_data(scene: dict, res: dict) -> dict:
     return {"tool": {"name": "PentAIWatch", "version": __version__}, "sessions": res.get("sessions", 0),
             "log_sources": res.get("log_sources", []), "limits": {"sources": MAX_SOURCES, "subnets": MAX_SUBNETS,
                                                                   "hosts": MAX_HOSTS, "services": MAX_SERVICES},
+            # the timing settings, so the page can say what "an agent's pace" meant in this run
+            "timing": (res.get("settings") or {}).get("timing") or {},
             **scene}
 
 
