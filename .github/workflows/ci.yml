@@ -13,7 +13,9 @@
 #   explorer  scripts/smoke/explorer_smoke.py: opens the Explorer page of five sample runs in headless
 #             Chromium, walks 3D, every source, a host, Flat and the report's link to the map, and fails
 #             on a page error, on a body or beam that is in the data and not drawn, or on a source whose
-#             panel does not give its level or the reason it is not flagged
+#             panel does not give its level or the reason it is not flagged; then
+#             scripts/smoke/upload_smoke.py starts the upload page, picks a folder, analyzes it and an
+#             upload, and opens the Timeline from a run's page inside the sandbox its files are sent in
 # Nothing here needs secrets or an API key. The Brim files are downloaded on the CI machine, pinned
 # to an exact commit and SHA-256 checked; they are never committed.
 name: CI
@@ -111,12 +113,16 @@ jobs:
       - run: python -m playwright install --with-deps chromium
       - name: Open the Explorer of each sample run
         run: python scripts/smoke/explorer_smoke.py --samples smoke-work
+      - name: Use the upload page end to end
+        run: python scripts/smoke/upload_smoke.py smoke-work
       - name: Keep the screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: explorer-screenshots
-          path: smoke-work/smoke-shots/
+          path: |
+            smoke-work/smoke-shots/
+            smoke-work/upload-shots/
           retention-days: 7
 
   realdata:

@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MAX_BYTES = 5 * 1024 * 1024
 
 LOCAL_NAMES = {"branding.json"}
-LOCAL_DIRS = {".vulnscope", "pentaiwatch_out"}
+LOCAL_DIRS = {".vulnscope", "pentaiwatch_out", "pentaiwatch_runs"}
 BINARY_EXT = {".pcap", ".pcapng", ".cap", ".pcapnano", ".exe", ".dll", ".so", ".dylib", ".bin", ".msi", ".scr",
               ".zip", ".7z", ".rar", ".tar", ".tgz", ".gz", ".bz2", ".xz", ".jar", ".apk", ".iso", ".dmg"}
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".bmp", ".tif", ".tiff"}

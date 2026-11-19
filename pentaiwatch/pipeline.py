@@ -52,7 +52,7 @@ def input_files(paths: list[str], outdir: str) -> list[str]:
 
 def run(paths: list[str], outdir: str, cfg: Config | None = None, *, config_path: str | None = None,
         network_map: str | None = None, known_scanners: str | None = None,
-        workdir: str | None = None) -> tuple[dict, dict[str, str]]:
+        workdir: str | None = None, internal_nets: list[str] | None = None) -> tuple[dict, dict[str, str]]:
     """Analyze ``paths`` (files or folders) and write the report and the Explorer into ``outdir``.
 
     Settings come from ``cfg``, else ``config_path``, else a pentaiwatch.json found in the input,
@@ -61,6 +61,8 @@ def run(paths: list[str], outdir: str, cfg: Config | None = None, *, config_path
     with whether it was named or found among the input files.
     ``workdir`` holds the run's Parquet batches and DuckDB file (default: system temp, or
     $PENTAIWATCH_WORKDIR); it is deleted when the run finishes.
+    ``internal_nets``, typed on the upload page, replaces the settings' internal_nets; the results
+    say so (``typed_settings``), and so does the report.
     Returns (results, {output name: path})."""
     engine.check()                                    # before any log is read
     files = input_files(paths, outdir)
@@ -74,7 +76,11 @@ def run(paths: list[str], outdir: str, cfg: Config | None = None, *, config_path
             setup.append(f"{len(config_files)} settings files ({config.FILENAME}) were found among the input "
                          f"files. Only {config_files[0]} was used; ignored: {', '.join(config_files[1:])}. "
                          "Name the one to use with --config.")
-    config.check(cfg)
+    typed = []                                        # settings typed on the upload page
+    if internal_nets:
+        cfg.internal_nets = list(internal_nets)
+        typed.append("internal_nets")
+    config.check(cfg, "internal networks" if typed else "settings")
     found_maps = [f for f in files if netmap.is_map_file(f)]
     maps = found_maps + ([network_map] if network_map else [])
     cfg.networks = [e for path in maps for e in netmap.read(path)]          # read first: a bad map fails fast
@@ -127,6 +133,7 @@ def run(paths: list[str], outdir: str, cfg: Config | None = None, *, config_path
                     "SELECT sensor, count(*) FROM threats GROUP BY 1 ORDER BY 1").fetchall()),
                 "settings": cfg.settings(),
                 "settings_files": settings_files,
+                "typed_settings": typed,
                 "networks": cfg.networks,
                 "known_scanners": cfg.known_scanners,
                 "warnings": warnings + detection.warnings,

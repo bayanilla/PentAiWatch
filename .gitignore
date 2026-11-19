@@ -5,6 +5,7 @@ __pycache__/
 .env
 # Outputs of a run
 pentaiwatch_out/
+pentaiwatch_runs/
 # Local settings and branding used for testing; never commit
 .vulnscope/
 **/.vulnscope/

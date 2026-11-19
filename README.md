@@ -42,6 +42,32 @@ The output folder gets:
 Only connection metadata is read, so nothing here needs SSL decryption. The tool makes no
 network connections, and neither do the pages it writes.
 
+## Upload page
+
+    python -m pentaiwatch serve
+
+or `python start_upload_page.py`, which also opens it in the browser. It serves
+`http://127.0.0.1:8770/` (the next free port if that one is taken) on this computer only, and
+works like VulnScope MAX's upload page:
+
+- **Folder on this computer.** Type a path or click **Browse…** (on a Mac, the system's Choose
+  Folder dialog; elsewhere, a list of folders on the page). The logs are read where they are,
+  nothing is copied. This is the way for large folders.
+- **Or upload files.** Choose a folder of logs, or single files, up to 20 GB in all
+  (`--max-upload-gb`). An upload is streamed to disk and refused up front when the disk lacks room
+  for it plus 2 GB to work in. File names and subfolders are kept, so a `pentaiwatch.json`,
+  `network_map.csv` or `known_scanners.csv` among them is used as it would be on the command line.
+- **Internal networks (optional).** Ranges typed here take the place of the settings file's
+  `internal_nets` for this run, and the report says so.
+
+The analysis runs in the background. Its page shows a timer while it runs (the tab can be closed)
+and then the result: the flagged sources, each with links to its place on the map and its
+Timeline, and the report, the Explorer, `report.md` and `results.json`. **Recent reports** on the
+upload page lists the last ten runs. Each run is a folder in `pentaiwatch_runs/` (`--data-dir`):
+`in/` holds the uploads (or `SOURCE.txt`, the list of files read in place), `out/` the usual
+output, and `STATUS.json` how the run went. One analysis runs at a time (`PENTAIWATCH_MAX_JOBS`).
+The page's own [security notes](#security-notes) are at the end of that section.
+
 ## Explorer
 
 ![The Explorer: outside sources on an arc above the subnets they swept](screenshots/explorer.png)
@@ -271,6 +297,21 @@ analyst's machine or in a closed network. What it does about that:
 The output folder is created readable by you alone when PentAIWatch makes it. The reports hold
 your internal addresses, so treat them like the logs they came from.
 
+The [upload page](#upload-page) can read any folder your account can, so it guards itself as
+VulnScope MAX's does:
+
+- **This computer only.** It listens on 127.0.0.1 and answers only requests addressed to
+  `127.0.0.1`, `localhost` or `[::1]` with its port, so a web page that points its own domain at
+  your computer (DNS rebinding) is refused. `--host` with another address needs `--allow-remote`,
+  and then every request must carry the access token printed at start-up. That traffic is plain
+  HTTP: use it on a trusted network or through an SSH tunnel.
+- **Other sites cannot drive it.** Every form and call needs a token that only the page itself
+  has, and a post from another site is refused.
+- **A run's files cannot act as the page.** The report and the Explorer are served in a browser
+  sandbox: they run in a separate, empty origin and cannot read the upload page, its folder list
+  or other runs, or post to it. Only files in a run's `out/` folder are served.
+- **Runs are private.** The runs folder and every file in it are readable by you alone.
+
 ## Known limitations
 
 - **Proxy rotation splits campaigns.** These tools rotate through residential, datacenter and
@@ -321,6 +362,17 @@ The Explorer page is put together from MAX's too:
 | `pentaiwatch/explore.py` | `vulnflow/explore.py` | The scene is this tool's own. How the data is packed into the page (gzip in base64, scripts inline) is MAX's. |
 | `scripts/smoke/explorer_smoke.py` | same name | The same approach, with this page's checks. |
 
+The upload page follows MAX's:
+
+| Here | From MAX | What changed |
+|---|---|---|
+| `pentaiwatch/web/handler.py` | `vulnflow/web/handler.py` | The same host, origin, CSRF and access-token checks. Pages' scripts are named by hash in their policy, and a run's files are sent in a sandbox. |
+| `pentaiwatch/web/multipart.py` | `vulnflow/multipart.py` | Where each file goes is decided by the caller, so uploaded names and subfolders are kept. |
+| `pentaiwatch/web/runname.py` | `vulnflow/runname.py` | Nothing but the names. |
+| `pentaiwatch/web/folders.py`, `static/web/folder_picker.js` | `vulnflow/web/folders.py`, `static/folder_picker.js` | The Docker container mode is left out. |
+| `pentaiwatch/static/web/busy.js`, `web.css` | `vulnflow/static/busy.js`, `forms.css` | The overlay as it is; the styles cut to these pages, light like the report and Graphite when the system is dark. |
+| `pentaiwatch/web/upload.py`, `runs.py`, `jobs.py`, `server.py`, `app.py`, `pages.py`, `routes.py` | `vulnflow/web/` | Written for this tool. A run goes on in the background and its page asks how it is going, so a long run never depends on one request. Nessus, the Security Assistant, Compare, settings and branding pages are left out. |
+
 ## Development
 
     pip install -r requirements-dev.txt
@@ -344,6 +396,13 @@ script run or anything be loaded or sent:
 
     pip install playwright==1.63.0 && python -m playwright install chromium
     python scripts/smoke/explorer_smoke.py --samples smoke-work
+
+`scripts/smoke/upload_smoke.py` does the same for the [upload page](#upload-page): it starts it,
+picks the sample folder with Browse…, analyzes it and an upload of the same log, and opens the
+agent's Timeline from the run's page, checking that the Explorer works inside the sandbox and
+cannot reach the upload page from there:
+
+    python scripts/smoke/upload_smoke.py smoke-work
 
 CI runs the same checks on every pull request.
 

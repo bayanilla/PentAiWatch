@@ -204,7 +204,9 @@ def markdown(res: dict) -> str:
     ping = ("a ping with no reply counts as failed in either log" if st["probing"]["zeek_icmp_by_reply"]
             else "a ping in a Zeek log counts as neither failed nor answered")
     lines += [_read_from(res["settings_files"]),
-              f"- Internal ranges: {', '.join(st['internal_nets'] + [n['cidr'] for n in res['networks']])}",
+              f"- Internal ranges: {', '.join(st['internal_nets'] + [n['cidr'] for n in res['networks']])}"
+              + (" (internal_nets typed on the upload page, in place of any settings file's)"
+                 if "internal_nets" in res.get("typed_settings", []) else ""),
               f"- Lookback: {st['lookback_hours']:g} hours back from the last session. Scoring window: "
               f"{st['window_hours']:g} hours.",
               f"- Probing: {st['probing']['min_ports']}+ ports or {st['probing']['min_hosts']}+ hosts, "
