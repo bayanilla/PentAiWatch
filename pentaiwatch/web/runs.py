@@ -29,11 +29,20 @@ _RUN = re.compile(RUN_ID)
 STATE_TEXT = {"running": "Running", "done": "Done", "failed": "Failed", "stopped": "Stopped"}
 
 
-def state(app, run_id: str, status: dict) -> str:
-    """running, done, failed, or stopped: a run that says "running" but that this server is not
-    running was cut short when an earlier server stopped."""
+def read_run(app, run_id: str) -> tuple[dict | None, bool]:
+    """The run's STATUS.json and whether this server was running it just before the file was read.
+
+    The order matters: a job writes its final status before it leaves the live list, so a run that
+    was live before the read and has since finished is read as finished, never as cut short."""
+    live = app.jobs.is_live(run_id)
+    return read_status(app.run_root(run_id)), live
+
+
+def state(status: dict, live: bool) -> str:
+    """running, done, failed, or stopped: a run that says "running" but that this server was not
+    running (``live``, from read_run) was cut short when an earlier server stopped."""
     st = status.get("state")
-    if st == "running" and not app.jobs.is_live(run_id):
+    if st == "running" and not live:
         return "stopped"
     return st if st in STATE_TEXT else "failed"
 
@@ -75,11 +84,11 @@ def _plural(n: int, word: str) -> str:
 def status_view(req, run_id: str):
     """GET /runs/<id>/status: {state, elapsed} for the progress overlay."""
     app = req.app
-    status = read_status(app.run_root(run_id))
+    status, live = read_run(app, run_id)
     if status is None:
         return req.send_json(404, {"error": "No such run."})
     elapsed = app.jobs.elapsed(run_id)
-    return req.send_json(200, {"state": state(app, run_id, status),
+    return req.send_json(200, {"state": state(status, live),
                                "elapsed": round(elapsed, 1) if elapsed is not None else status.get("seconds")})
 
 
@@ -101,10 +110,10 @@ def get(req, run_id: str, rest: str):
 
 def index(req, run_id: str):
     app = req.app
-    status = read_status(app.run_root(run_id))
+    status, live = read_run(app, run_id)
     if status is None:
         return req.send_text(404, "Not found")
-    st = state(app, run_id, status)
+    st = state(status, live)
     source = html.escape(str(status.get("source") or ""))
     started = _local(status.get("started"))
     name = _name(status)
@@ -174,8 +183,8 @@ def _done(app, run_id: str, status: dict, where: str, heading: str) -> str:
 
 
 # -- the upload page's list -----------------------------------------------------------------
-def recent(app, limit: int = RECENT) -> list[tuple[str, dict]]:
-    """The newest runs in the runs folder, as (run id, status), newest first."""
+def recent(app, limit: int = RECENT) -> list[tuple[str, dict, bool]]:
+    """The newest runs in the runs folder, as (run id, status, live) from read_run, newest first."""
     try:
         names = os.listdir(app.data_dir)
     except OSError:
@@ -184,11 +193,11 @@ def recent(app, limit: int = RECENT) -> list[tuple[str, dict]]:
     for name in names:
         if not _RUN.fullmatch(name):
             continue
-        status = read_status(app.run_root(name))
+        status, live = read_run(app, name)
         if status is not None:
-            rows.append((str(status.get("started") or ""), name, status))
-    rows.sort(reverse=True)
-    return [(name, status) for _, name, status in rows[:limit]]
+            rows.append((str(status.get("started") or ""), name, status, live))
+    rows.sort(key=lambda row: row[:2], reverse=True)
+    return [(name, status, live) for _, name, status, live in rows[:limit]]
 
 
 def recent_html(app) -> str:
@@ -196,8 +205,8 @@ def recent_html(app) -> str:
     if not rows:
         return ""
     body = []
-    for run_id, status in rows:
-        st = state(app, run_id, status)
+    for run_id, status, live in rows:
+        st = state(status, live)
         summary = status.get("summary") if isinstance(status.get("summary"), dict) else {}
         flagged = len(summary.get("flagged") or []) if st == "done" else None
         body.append(f'<tr><td class="when"><a href="/runs/{quote(run_id)}/">{_local(status.get("started")) or html.escape(run_id)}</a></td>'
