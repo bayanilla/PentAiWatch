@@ -14,7 +14,9 @@ What is checked:
    against the same counts worked out here by a separate, plain reader of conn.log that shares
    no code with PentAIWatch.
 2. The TSV and JSON forms of the log give the same result.
-3. Nothing in the capture itself is flagged. One source sweeps and then narrows, an nmap run: a
+3. Nothing in the capture itself is flagged as agentic, and the other signals (published
+   addresses, machine-steady repetition, high-rate spray, rotating sources) find what EXPECTED
+   says, from every form of the log. One source sweeps and then narrows, an nmap run: a
    ping sweep, a port scan, then service detection on what answered. Its pace is what tells it
    from an agentic tool, and the bursts and pauses PentAIWatch counts for it are the ones the
    plain reader counts: 6 bursts, 5 pauses, none of them 20 to 35 seconds long.
@@ -68,6 +70,12 @@ EXPECTED = {
     "narrowing_sources": 1,
     "nmap_pace": {"sessions": 39_746, "bursts": 6, "pauses": 5, "pauses_in_band": 0},
     "flagged": [],
+    # The other signals, the same from every form of the log. Two red-team sources hammer single
+    # services with completed connections, well over one a second for minutes: a web server's port 80
+    # (10.128.0.248, up to 179 a minute) and web and VNC ports on several hosts (10.164.94.120, up to
+    # 411 a minute). That is the brute force the spray signal is for. Nothing is on the published
+    # address lists, nothing keeps a machine-steady gap, and no sweep is followed by new addresses.
+    "other_signals": {"known": [], "steady": [], "spray": ["10.128.0.248", "10.164.94.120"], "rotation": []},
     # with the synthetic agent added: [source, level], the same from every form of the log
     "with_agent_flagged": [[sample.AGENT, 1]],
     # Whole-second firewall times make 713 rows the same as another row (same second, addresses,
@@ -187,7 +195,11 @@ def summary(res: dict) -> dict:
     return {"sessions": res["sessions"], "inbound_sessions": d["inbound_sessions"],
             "outside_sources": d["outside_sources"], "sweeping_sources": d["probing_sources"],
             "narrowing_sources": d["narrowing_sources"],
-            "flagged": sorted([f["source"], f["level"]] for f in d["findings"])}
+            "flagged": sorted([f["source"], f["level"]] for f in d["findings"]),
+            "other_signals": {"known": sorted(k["source"] for k in d.get("known_sources") or []),
+                              "steady": sorted(v["source"] for v in d.get("steady_sources") or []),
+                              "spray": sorted(v["source"] for v in d.get("spray_sources") or []),
+                              "rotation": sorted(g["sweeper"] for g in d.get("rotations") or [])}}
 
 
 def drawn_pace(res: dict, source: str) -> dict | None:
@@ -259,6 +271,9 @@ def main(data: str, work: str) -> int:
     checks.append(("Zeek: the nmap run's Timeline (every second session drawn, all counted)", truth["nmap_timeline"],
                    drawn_timeline(runs["zeek_tsv"], NMAP)))
     checks.append(("Zeek: flagged in the capture itself", EXPECTED["flagged"], got["zeek_tsv"]["flagged"]))
+    for name in ("zeek_tsv", "zeek_json", "zeek_with_agent", "paloalto_with_agent", "both_with_agent"):
+        checks.append((f"{name}: published addresses, steady, spray and rotating sources",
+                       EXPECTED["other_signals"], got[name]["other_signals"]))
     for name in ("zeek_with_agent", "paloalto_with_agent", "both_with_agent"):
         checks.append((f"{name}: flagged, with the level", EXPECTED["with_agent_flagged"], got[name]["flagged"]))
         checks.append((f"{name}: sources that swept and then narrowed", EXPECTED["narrowing_sources"] + 1,

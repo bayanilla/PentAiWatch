@@ -67,6 +67,11 @@ def summary(res: dict) -> dict:
                            "hosts": len({r["service"].split(":")[0].split("/")[0] for r in v["runs"]}),
                            "timeline": False, "tag": "Machine-steady"}
                           for v in res["detection"].get("steady_sources") or []]
+                       + [{"source": v["source"], "level": None, "label": f"{v['runs'][0]['sessions']:,} sessions "
+                           f"to {v['runs'][0]['service']}, up to {v['runs'][0]['peak_per_minute']:,} a minute",
+                           "hosts": len({r["service"].split(":")[0] for r in v["runs"]}),
+                           "timeline": False, "tag": "Login spray"}
+                          for v in res["detection"].get("spray_sources") or []]
                        + _rotation_entries(res)}
 
 
@@ -74,7 +79,7 @@ def _rotation_entries(res: dict) -> list[dict]:
     """The rotating sources not already listed: each sweep, then the addresses that came back to it."""
     det = res["detection"]
     listed = {x["source"] for x in det["findings"] + (det.get("known_sources") or [])
-              + (det.get("steady_sources") or [])}
+              + (det.get("steady_sources") or []) + (det.get("spray_sources") or [])}
     out = []
     for g in det.get("rotations") or []:
         members = [(g["sweeper"], f"swept {g['services_probed']:,} services; {len(g['joiners'])} new addresses "

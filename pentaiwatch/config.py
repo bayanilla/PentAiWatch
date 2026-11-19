@@ -91,6 +91,24 @@ class Steady:
 
 
 @dataclass
+class Spray:
+    """High-rate login spray: one source sends a flood of completed connections to one service,
+    minute after minute, as a password spray against a VPN portal, webmail or remote access does
+    (Microsoft saw up to 2,900 failed logins a minute from one Storm-0940 address). Unlike
+    machine-steady repetition, the gaps need not be even. A connection that completes is a login
+    attempt reaching the service; a scan's connections mostly fail. Counted per minute, so it works
+    from session start or end times."""
+    # Sessions in one minute from the source to one TCP service: one a second. A person, or a tool
+    # following up on what it found, stays well under that for minutes on end.
+    min_per_minute: int = 60
+    min_minutes: int = 5                 # minutes at that rate in the lookback
+    min_answered_share: float = 0.50     # share of those sessions that completed
+    # A service more outside addresses than this used in the lookback is public: a busy client of it
+    # (or many people behind one NAT address) is expected there, so it is left out.
+    max_service_sources: int = 20
+
+
+@dataclass
 class Parallel:
     """Several attack paths at once: once a flagged source has narrowed, its bursts work more than one
     service, switching back and forth between them, as an agent that runs several attack paths side by
@@ -210,6 +228,7 @@ class Config:
     narrowing: Narrowing = field(default_factory=Narrowing)
     timing: Timing = field(default_factory=Timing)
     steady: Steady = field(default_factory=Steady)
+    spray: Spray = field(default_factory=Spray)
     parallel: Parallel = field(default_factory=Parallel)
     rotation: Rotation = field(default_factory=Rotation)
     # Named kinds of target: name -> ports. Your names are added; giving a default name replaces its
@@ -340,7 +359,8 @@ def check(cfg: Config, name: str = "settings") -> None:
               "narrowing.min_focus_share": cfg.narrowing.min_focus_share,
               "timing.min_pause_share": cfg.timing.min_pause_share,
               "timing.min_timed_share": cfg.timing.min_timed_share,
-              "steady.max_jitter": cfg.steady.max_jitter}
+              "steady.max_jitter": cfg.steady.max_jitter,
+              "spray.min_answered_share": cfg.spray.min_answered_share}
     for key, value in shares.items():
         if not 0 <= value <= 1:
             raise UserError(f"{name}: {key} must be between 0 and 1 (0.7 means 70%)")
@@ -349,6 +369,8 @@ def check(cfg: Config, name: str = "settings") -> None:
                         "always even")
     if cfg.parallel.min_services < 2 or cfg.parallel.min_bursts < 1:
         raise UserError(f"{name}: parallel.min_services must be 2 or more, and parallel.min_bursts 1 or more")
+    if min(cfg.spray.min_per_minute, cfg.spray.min_minutes, cfg.spray.max_service_sources) < 1:
+        raise UserError(f"{name}: spray.min_per_minute, spray.min_minutes and spray.max_service_sources must be 1 or more")
     if cfg.rotation.min_joiners < 1 or cfg.rotation.max_service_sources < 1:
         raise UserError(f"{name}: rotation.min_joiners and rotation.max_service_sources must be 1 or more")
     if cfg.window_hours > cfg.lookback_hours:

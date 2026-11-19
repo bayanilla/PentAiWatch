@@ -24,6 +24,10 @@ How it works, in order:
 10. ``_steady``             sources that hit one service over and over at an almost constant gap,
                             as a scripted login brute force does: flagged on their own, and
                             attached to a finding when the source is flagged already.
+11. ``_spray``              sources that sent a flood of completed connections to one service,
+                            minute after minute, as a password spray does: the same.
+Within step 8, ``_parallel`` (several attack paths at once) raises a finding's confidence, and
+``_rotation`` ties new addresses that came straight back to what one sweep found to that sweep.
 
 A source is flagged when probing and narrowing fired and timing either fired too (level 1) or
 could not be judged because its sessions have no start time (tier 0). A source that swept and
@@ -135,6 +139,7 @@ class Finding:
     notes: list[str] = field(default_factory=list)    # what a reader should know about this finding's data
     known: dict | None = None    # its entry in a list of published attacker addresses, if any
     steady: list[SteadyRun] = field(default_factory=list)   # machine-steady repetition, if any
+    spray: list[SprayRun] = field(default_factory=list)     # high-rate login spray, if any
     targets: list[str] = field(default_factory=list)  # kinds of target among all the services it narrowed onto
     parallel: ParallelPaths | None = None   # several attack paths at once, if seen: higher confidence
     confidence: str = "standard"            # "higher" when several attack paths at once were seen
@@ -192,6 +197,29 @@ class Rotation:
 
 
 @dataclass
+class SprayRun:
+    """A source's flood of completed connections to one service."""
+    service: str                 # "host:port/proto"
+    minutes: int                 # minutes at the spray rate or above
+    sessions: int                # sessions in those minutes
+    answered: int
+    peak_per_minute: int
+    first: str                   # start of the first such minute
+    last: str                    # end of the last such minute
+    target: str = ""             # the kind of target the service is, '' when none
+
+
+@dataclass
+class SpraySource:
+    """A source whose only evidence is a high-rate login spray (it was not flagged otherwise)."""
+    source: str
+    log_sources: list[str]
+    runs: list[SprayRun]         # most sessions first (capped)
+    runs_total: int
+    sessions: int                # all its inbound sessions in the lookback
+
+
+@dataclass
 class SteadySource:
     """A source whose only evidence is machine-steady repetition (it was not flagged otherwise)."""
     source: str
@@ -225,6 +253,7 @@ class Detection:
     findings: list[Finding] = field(default_factory=list)
     known_sources: list[KnownSource] = field(default_factory=list)
     steady_sources: list[SteadySource] = field(default_factory=list)
+    spray_sources: list[SpraySource] = field(default_factory=list)
     rotations: list[Rotation] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     lookback_start: str | None = None
@@ -310,6 +339,16 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
             for f in out.findings:
                 if f.source == g.sweeper:
                     f.rotation = g
+        spray = _spray(con, cfg)
+        for f in out.findings:
+            f.spray = spray.pop(f.source, [])
+        steady_only = {v.source for v in out.steady_sources}
+        out.spray_sources = [
+            SpraySource(source=src, log_sources=log_sources(con, src), runs=runs[:MAX_SPRAY_RUNS],
+                        runs_total=len(runs), sessions=int(con.execute(
+                            "SELECT count(*) FROM pw_sessions WHERE src_ip = ?", [src]).fetchone()[0]))
+            for src, runs in sorted(spray.items(), key=lambda kv: (-kv[1][0].sessions, kv[0]))
+            if src not in steady_only]
         listed_but_allowed = sorted(ip for ip in bad if ip in _allowed(con))
         if listed_but_allowed:
             out.warnings.append(f"{len(listed_but_allowed)} source(s) on a list of published attacker addresses are "
@@ -873,6 +912,43 @@ def _known_sources(con, bad: dict[str, dict], flagged: set[str], tports: dict[in
             targets=_names(tports, [(p, pr) for _, p, pr, _ in svc])))
     rank = {c: i for i, c in enumerate(("high", "medium", "low", ""))}
     return sorted(out, key=lambda k: (rank.get(k.confidence, 3), -k.sessions, k.source))
+
+
+# -- 11. high-rate login spray ---------------------------------------------------------------
+MAX_SPRAY_RUNS = 10
+
+
+def _spray(con, cfg: Config) -> dict[str, list[SprayRun]]:
+    """Per source, the TCP services it sent ``spray.min_per_minute`` or more sessions a minute in
+    ``spray.min_minutes`` or more minutes, with ``spray.min_answered_share`` of those sessions
+    completed. Services more than ``spray.max_service_sources`` outside addresses used are left
+    out. Most sessions first."""
+    s = cfg.spray
+    rows = con.execute("""
+        WITH public AS (
+            SELECT dst_ip, dst_port FROM pw_sessions WHERE proto = 'tcp'
+            GROUP BY ALL HAVING count(DISTINCT src_ip) > $max_sources),
+        per_min AS (
+            SELECT src_ip, dst_ip, dst_port, date_trunc('minute', start_ts) AS m, count(*) AS n,
+                   count(*) FILTER (outcome = 'answered') AS a
+            FROM pw_sessions WHERE proto = 'tcp' AND dst_port IS NOT NULL
+            GROUP BY ALL HAVING count(*) >= $rate)
+        SELECT p.src_ip, p.dst_ip, p.dst_port, count(*) AS minutes, sum(p.n) AS sessions, sum(p.a) AS answered,
+               max(p.n) AS peak, min(p.m) AS first, max(p.m) + INTERVAL 1 MINUTE AS last
+        FROM per_min p
+        WHERE NOT EXISTS (SELECT 1 FROM public u WHERE u.dst_ip = p.dst_ip AND u.dst_port = p.dst_port)
+        GROUP BY p.src_ip, p.dst_ip, p.dst_port
+        HAVING count(*) >= $min_minutes AND sum(p.a) >= $share * sum(p.n)
+        ORDER BY p.src_ip, sessions DESC, p.dst_ip, p.dst_port""",
+                       {"max_sources": int(s.max_service_sources), "rate": int(s.min_per_minute),
+                        "min_minutes": int(s.min_minutes), "share": float(s.min_answered_share)}).fetchall()
+    out: dict[str, list[SprayRun]] = {}
+    tports = target_ports(cfg)
+    for src, host, port, minutes, n, answered, peak, first, last in rows:
+        out.setdefault(src, []).append(SprayRun(
+            service=f"{host}:{port}/tcp", minutes=int(minutes), sessions=int(n), answered=int(answered),
+            peak_per_minute=int(peak), first=_iso(first), last=_iso(last), target=target_of(tports, port, "tcp")))
+    return out
 
 
 # -- 10. machine-steady repetition ------------------------------------------------------------

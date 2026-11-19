@@ -192,6 +192,21 @@ of two neighbouring whole seconds (a second or more apart) counts as steady too;
 3 do not. Health checks and monitoring probes can be just as steady: list the
 ones you expect in `known_scanners.csv`.
 
+### High-rate login spray
+
+A password spray against your VPN portal, webmail or remote access shows up as a flood of
+connections from one address to one service. Microsoft saw up to 2,900 failed logins a minute
+from one Storm-0940 address. A source that sends `spray.min_per_minute` (60, one a second) or more
+sessions a minute to one TCP service, in `spray.min_minutes` (5) or more minutes, with
+`spray.min_answered_share` (50%) or more of them completed, is flagged for that alone. Unlike
+machine-steady repetition, the gaps need not be even. Completed connections are what separate it
+from a scan, whose connections mostly fail. The connection log shows how hard it hit, not whether a
+login worked, so check that service's own log for the failures. Minutes are counted on whatever
+time the session has, so it works from Zeek or from any Palo Alto export. A service that more than
+`spray.max_service_sources` (20) outside addresses used is public and left out, because a busy
+client of it, or many people behind one NAT address, is expected there. List busy integrations
+you expect in `known_scanners.csv`.
+
 ### Several attack paths at once
 
 ARTEX ran several attack paths side by side from one address. Once a flagged source has narrowed,
@@ -278,6 +293,12 @@ first is used, a warning names the others, and `--config` settles it.
     "min_sessions": 50,
     "max_gap_seconds": 10,
     "max_jitter": 0.1
+  },
+  "spray": {
+    "min_per_minute": 60,
+    "min_minutes": 5,
+    "min_answered_share": 0.5,
+    "max_service_sources": 20
   },
   "parallel": {
     "min_services": 2,
