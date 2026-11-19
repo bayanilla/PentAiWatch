@@ -81,25 +81,26 @@ class Jobs:
         return None if started is None else time.monotonic() - started
 
     def start(self, run_id: str, root: str, files: list[str], internal_nets: list[str] | None, source: str,
-              run=None) -> None:
+              run=None, report: dict | None = None) -> None:
         """Start analyzing ``files`` into ``root``/out in the background. Raises BusyError when as
         many analyses as may run at once are already running. ``run`` stands in for pipeline.run
-        (tests)."""
+        (tests). ``report`` is the report name and description (details.clean)."""
         with self._lock:
             if len(self._live) >= resources.max_jobs() or resources.busy():
                 raise resources.BusyError("Another analysis is already running on this computer. Wait for it to "
                                           "finish and try again; the upload page lists it under Recent reports.")
-            write_status(root, {"state": "running", "started": _now(), "source": source, "files": len(files)})
+            write_status(root, {"state": "running", "started": _now(), "source": source, "files": len(files),
+                                "report": report or {}})
             self._live[run_id] = time.monotonic()
         thread = threading.Thread(target=self._run, name=f"pentaiwatch-run-{run_id}", daemon=True,
-                                  args=(run_id, root, files, internal_nets, run or pipeline.run))
+                                  args=(run_id, root, files, internal_nets, report, run or pipeline.run))
         thread.start()
 
-    def _run(self, run_id: str, root: str, files: list[str], internal_nets, run) -> None:
+    def _run(self, run_id: str, root: str, files: list[str], internal_nets, report, run) -> None:
         status = read_status(root) or {}
         began = time.monotonic()
         try:
-            res, _ = run(files, os.path.join(root, "out"), workdir=root, internal_nets=internal_nets)
+            res, _ = run(files, os.path.join(root, "out"), workdir=root, internal_nets=internal_nets, report=report)
             status.update(state="done", summary=summary(res))
         except UserError as exc:
             status.update(state="failed", message=str(exc))

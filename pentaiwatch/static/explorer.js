@@ -1064,6 +1064,8 @@ if (!state.motion) $('btn-motion').setAttribute('aria-pressed', 'false');
     `${fmt(CNT.inbound_sessions)} inbound sessions from ${plural(CNT.outside_sources || 0, 'outside source')}`];
   if (w[0]) bits.push(`${when(w[0]).slice(0, 16)} → ${when(w[1])}`);
   $('subtitle').textContent = bits.join(' · ');
+  const rep = D.report || {}, el = $('report-name');
+  if (rep.name && el) { el.textContent = rep.name; el.title = rep.description || rep.name; el.hidden = false; }
 }
 
 // ---------------------------------------------------------------- start

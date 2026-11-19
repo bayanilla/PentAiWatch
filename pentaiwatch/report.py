@@ -130,10 +130,22 @@ def _finding_lines(f: dict, st: dict, map_file: str = "", timeline: bool = False
     return lines + [""]
 
 
+def _intro(res: dict) -> list[str]:
+    """The analyst's report name and description, under the title (nothing when not given). Each
+    line starts with text of ours, so none can become a heading, a list or a table; the HTML page
+    escapes them like everything else."""
+    r = res.get("report") or {}
+    lines = [f"**Report:** {r['name']}", ""] if r.get("name") else []
+    for para in (r.get("description") or "").split("\n\n"):
+        if para.strip():
+            lines += ["> " + ln for ln in para.splitlines() if ln.strip()] + [""]
+    return lines
+
+
 def markdown(res: dict) -> str:
     det = res["detection"]
     found = det["findings"]
-    lines = ["# PentAIWatch report", "",
+    lines = ["# PentAIWatch report", "", *_intro(res),
              f"{res['sessions']:,} sessions were read from "
              f"{_all([SOURCE_TEXT.get(s, s) for s in res['log_sources']]) or 'no usable log'}. "
              f"Scored: {det['inbound_sessions']:,} sessions from "
@@ -246,8 +258,10 @@ h1{font-size:26px;margin:0 0 12px}h2{font-size:20px;margin:32px 0 10px;border-bo
 h3{font-size:16px;margin:24px 0 8px}table{border-collapse:collapse;width:100%;margin:8px 0 14px;background:#fff}
 td,th{border:1px solid #d5d9e0;padding:6px 10px;text-align:left;vertical-align:top}th{background:#eceff3}
 td:first-child{white-space:nowrap}code{background:#eceff3;padding:1px 4px;border-radius:3px}a{color:#1558b0}
+blockquote{margin:0 0 14px;padding:2px 14px;border-left:3px solid #d5d9e0;color:#3a4352}blockquote p{margin:6px 0}
 @media (prefers-color-scheme:dark){body{color:#e4e7ec;background:#14181f}table{background:#1b212b}
-td,th{border-color:#313948}th,code{background:#252d3a}h2{border-color:#313948}a{color:#7db4f5}}"""
+td,th{border-color:#313948}th,code{background:#252d3a}h2{border-color:#313948}a{color:#7db4f5}
+blockquote{border-color:#313948;color:#c3c9d3}}"""
 
 
 # The only links the report makes: to a page in its own folder, optionally at one source address
@@ -270,7 +284,7 @@ def to_html(md: str, title: str = "PentAIWatch report") -> str:
     def close():
         nonlocal mode
         if mode:
-            out.append({"ul": "</ul>", "table": "</tbody></table>"}[mode])
+            out.append({"ul": "</ul>", "table": "</tbody></table>", "quote": "</blockquote>"}[mode])
             mode = ""
     for line in md.split("\n"):
         if line.startswith("|"):
@@ -290,6 +304,12 @@ def to_html(md: str, title: str = "PentAIWatch report") -> str:
                 mode = "ul"
                 out.append("<ul>")
             out.append(f"<li>{_inline(line[2:])}</li>")
+        elif line.startswith("> "):
+            if mode != "quote":
+                close()
+                mode = "quote"
+                out.append("<blockquote>")
+            out.append(f"<p>{_inline(line[2:])}</p>")
         else:
             close()
             m = re.match(r"(#{1,3}) (.*)", line)
@@ -305,13 +325,19 @@ def to_html(md: str, title: str = "PentAIWatch report") -> str:
             + "\n".join(out) + "\n</main></body></html>\n")
 
 
+def title(res: dict, page: str = "PentAIWatch report") -> str:
+    """A page's title, after the report name when there is one."""
+    name = (res.get("report") or {}).get("name")
+    return f"{name} · {page}" if name else page
+
+
 def write_all(res: dict, outdir: str) -> dict[str, str]:
     """Write results.json, report.md and report.html into ``outdir``; returns {name: path}."""
     os.makedirs(outdir, mode=0o700, exist_ok=True)
     md = markdown(res)
     paths = {}
     for name, text in (("results.json", json.dumps(res, indent=2) + "\n"), ("report.md", md),
-                       ("report.html", to_html(md))):
+                       ("report.html", to_html(md, title(res)))):
         paths[name] = os.path.join(outdir, name)
         with open(paths[name], "w", encoding="utf-8") as fh:
             fh.write(text)

@@ -5,9 +5,10 @@ Starts the upload page on a free loopback port with a fresh runs folder, writes 
 in headless Chromium:
 
   * opens the upload page, light and dark, and fails on any page or console error;
-  * opens the in-page folder list with Browse…, goes into the sample folder and uses it;
+  * opens the in-page folder list with Browse…, goes into the sample folder and uses it, and gives the run a
+    report name and description;
   * analyzes that folder: the run's page must show the progress overlay while it runs and then the result,
-    with the sample agent flagged;
+    with the sample agent flagged, in a folder named after the report;
   * follows the agent's Timeline link: the Explorer must open on its Timeline and draw, inside the sandbox
     a run's files are sent in, where it must have no origin of its own, no cookies and no way to read
     the upload page;
@@ -107,6 +108,8 @@ def main() -> int:
             page.screenshot(path=str(shots / "picker.png"), full_page=True)
             page.click("#pk-use")
             check(page.input_value("#path") == str(logs), "Use this folder fills in the path")
+            page.fill("#report_name", "Smoke <check>")
+            page.fill("#report_description", "Made by the browser check.")
 
             # Analyze the folder; the run page shows the overlay, then the result
             page.click("#analyze-folder")
@@ -114,6 +117,8 @@ def main() -> int:
             check(poll(page, "document.querySelector('h1') && /Results/.test(document.querySelector('h1').textContent)"),
                   "the folder's run finishes and shows its result")
             body = page.inner_text("main")
+            check("Results: Smoke <check>" in body and "Made by the browser check." in body
+                  and "/runs/Smoke-check_" in page.url, "the run is named after the report")
             check("1 source flagged" in body and sample.AGENT in body, "the sample agent is flagged")
             page.screenshot(path=str(shots / "results.png"), full_page=True)
 
@@ -128,6 +133,8 @@ def main() -> int:
                   "it opens on the agent's Timeline")
             ex.wait_for_timeout(1500)
             ex.screenshot(path=str(shots / "explorer-timeline.png"))
+            check(ex.evaluate("document.getElementById('report-name').textContent") == "Smoke <check>"
+                  and ex.title().startswith("Smoke <check> · "), "the Explorer shows the report name")
             check(not ex_errors, f"no Explorer errors: {ex_errors}")      # before the probes, which the policy blocks
             check(ex.evaluate("window.origin") == "null", "a run's files have no origin of their own")
             check(ex.evaluate("(() => { try { document.cookie; return false } catch (e) { return true } })()"),

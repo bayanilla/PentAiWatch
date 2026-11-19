@@ -20,6 +20,7 @@ class App:
     jobs: Jobs = field(default_factory=Jobs)
     last_path: str = ""                     # kept on the upload page after an error
     last_nets: str = ""
+    last_report: dict = field(default_factory=dict)   # report name and description
 
     def csrf_ok(self, token) -> bool:
         return isinstance(token, str) and secrets.compare_digest(token.encode(), self.csrf.encode())
