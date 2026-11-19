@@ -18,4 +18,5 @@ POST = [
     (re.compile(r"/analyze-folder"), upload.analyze_folder),
     (re.compile(r"/browse"), folders.browse),
     (re.compile(r"/pick-folder"), folders.pick),
+    (re.compile(r"/folder-kind"), upload.folder_kind),
 ]

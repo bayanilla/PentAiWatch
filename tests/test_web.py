@@ -108,7 +108,7 @@ class Gate(Server):
         r = self.ask("GET", "/")
         policy = r.headers["content-security-policy"]
         scripts = re.findall(r"<script>(.*?)</script>", r.body, re.S)
-        self.assertEqual(len(scripts), 3)
+        self.assertEqual(len(scripts), 4)
         for s in scripts:
             digest = base64.b64encode(hashlib.sha256(s.encode()).digest()).decode()
             self.assertIn(f"'sha256-{digest}'", policy)
@@ -377,6 +377,84 @@ class Details(Server):
         md = self.ask("GET", f"/runs/{run_id}/report.md").body
         self.assertNotIn("**Report:**", md)
         self.assertIn("<title>PentAIWatch report</title>", self.ask("GET", f"/runs/{run_id}/report.html").body)
+
+
+class Reopen(Server):
+    def finished(self, name="Saved one"):
+        """A finished run's output folder, written by the command line."""
+        from pentaiwatch.pipeline import run
+        out = os.path.join(self.tmp.name, "saved-out")
+        run([self.logs()], out, report={"name": name, "description": "From before."})
+        return out
+
+    def open(self, folder):
+        return self.form("/analyze-folder", {"path": folder, "csrf": self.app.csrf, "report_name": "ignored"})
+
+    def test_a_saved_report_opens_without_reading_the_logs(self):
+        out = self.finished()
+        before = {n: os.path.getmtime(os.path.join(out, n)) for n in os.listdir(out)}
+        kind = self.ask("POST", "/folder-kind", json.dumps({"csrf": self.app.csrf, "path": out}))
+        self.assertEqual(json.loads(kind.body), {"report": True})
+        self.assertEqual(json.loads(self.ask("POST", "/folder-kind", json.dumps(
+            {"csrf": self.app.csrf, "path": self.logs()})).body), {"report": False})
+        with mock.patch("pentaiwatch.pipeline.load", side_effect=AssertionError("the logs were read")):
+            r = self.open(out)
+        self.assertEqual(r.status, 303, r.body)
+        run_id = r.headers["location"].split("/")[2]
+        self.assertTrue(run_id.startswith("Saved-one_"))
+        page = self.ask("GET", f"/runs/{run_id}/").body
+        self.assertIn("Results: Saved one</h1>", page)
+        self.assertIn("Reopened from", page)
+        self.assertIn("1 source flagged", page)
+        self.assertNotIn("took", page)
+        self.assertIn("**Report:** Saved one", self.ask("GET", f"/runs/{run_id}/report.md").body)
+        explorer = self.ask("GET", f"/runs/{run_id}/explorer.html").body
+        from pentaiwatch import explore
+        data = explore.read_data(explorer)
+        self.assertEqual(data["report"]["name"], "Saved one")
+        self.assertIn(sample.AGENT, data["timelines"])
+        self.assertEqual(before, {n: os.path.getmtime(os.path.join(out, n)) for n in os.listdir(out)})   # untouched
+
+    def test_without_explorer_the_report_still_opens(self):
+        out = self.finished()
+        os.remove(os.path.join(out, "explorer.html"))
+        r = self.open(out)
+        run_id = r.headers["location"].split("/")[2]
+        files = os.listdir(os.path.join(self.data, run_id, "out"))
+        self.assertNotIn("explorer.html", files)
+        self.assertNotIn("explorer.html", self.ask("GET", f"/runs/{run_id}/report.md").body)
+        self.assertNotIn("Open the Explorer", self.ask("GET", f"/runs/{run_id}/").body)
+
+    def test_bad_saved_folders_say_why(self):
+        out = self.finished()
+        path = os.path.join(out, "results.json")
+        with open(path, encoding="utf-8") as fh:
+            good = json.load(fh)
+        cases = [("{not json", "is not valid JSON"),
+                 (json.dumps([1]), "the top level is not an object"),
+                 (json.dumps({**good, "tool": {"name": "Other"}}), "was not written by PentAIWatch"),
+                 (json.dumps({**good, "schema_version": 99}), "newer PentAIWatch"),
+                 (json.dumps({**good, "detection": {"findings": [{}]}}), "a finding has no source"),
+                 (json.dumps({**good, "sessions": good["sessions"] + 1}), "different analysis"),
+                 (json.dumps({**good, "settings": None}), "can't be written out by this version")]
+        for text, says in cases:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            r = self.open(out)
+            self.assertEqual(r.status, 200, says)
+            self.assertIn(says, html_unescape(r.body), says)
+        self.assertEqual(os.listdir(self.data), [])             # nothing left behind
+
+    def test_a_damaged_explorer_page(self):
+        out = self.finished()
+        with open(os.path.join(out, "explorer.html"), "w", encoding="utf-8") as fh:
+            fh.write("<html>nothing here</html>")
+        self.assertIn("explorer.html in that folder cannot be read", html_unescape(self.open(out).body))
+
+
+def html_unescape(text):
+    import html
+    return html.unescape(text)
 
 
 class Clean(unittest.TestCase):

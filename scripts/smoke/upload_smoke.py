@@ -12,7 +12,9 @@ in headless Chromium:
   * follows the agent's Timeline link: the Explorer must open on its Timeline and draw, inside the sandbox
     a run's files are sent in, where it must have no origin of its own, no cookies and no way to read
     the upload page;
-  * uploads the same log as a file and checks the run finishes with the agent flagged.
+  * uploads the same log as a file and checks the run finishes with the agent flagged;
+  * types the first run's output folder: the button must say Open report, and the saved report must open
+    with its name and result, without reading the logs again.
 
 Usage:
   python scripts/smoke/upload_smoke.py WORKDIR     screenshots go to WORKDIR/upload-shots/
@@ -150,8 +152,20 @@ def main() -> int:
             check(poll(page, "document.querySelector('h1') && /Results/.test(document.querySelector('h1').textContent)"),
                   "the upload's run finishes")
             check("1 source flagged" in page.inner_text("main"), "and flags the sample agent")
+            # Open the first run's saved report again from its output folder
             page.goto(url)
-            check(page.locator("table tbody tr").count() == 2, "Recent reports lists both runs")
+            first = sorted((work / "upload-runs").glob("Smoke-check_*"))[0] / "out"
+            page.fill("#path", str(first))
+            check(poll(page, "document.getElementById('analyze-folder').textContent === 'Open report'", 10),
+                  "a finished report's folder turns the button into Open report")
+            page.screenshot(path=str(shots / "open-report.png"), full_page=True)
+            page.click("#analyze-folder")
+            page.wait_for_url("**/runs/Smoke-check_*/", timeout=30000)
+            body = page.inner_text("main")
+            check("Results: Smoke <check>" in body and "Reopened from" in body and "1 source flagged" in body,
+                  "the saved report opens with its name and result")
+            page.goto(url)
+            check(page.locator("table tbody tr").count() == 3, "Recent reports lists all three runs")
             page.screenshot(path=str(shots / "recent.png"), full_page=True)
             check(not errors, f"no page errors ({scheme}): {errors}")
             ctx.close()
