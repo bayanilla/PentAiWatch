@@ -101,6 +101,32 @@ def _known_lines(known: list[dict]) -> list[str]:
     return lines + [""]
 
 
+def _steady_run(r: dict) -> str:
+    spread = ("times in whole seconds, so the gaps vary only by the rounding" if r.get("whole_seconds")
+              and r["jitter"] > 0 else f"gaps vary by {r['jitter']:.0%}")
+    return (f"{r['service']}: {r['sessions']:,} sessions, one every {r['gap_seconds']:g} s "
+            f"({spread}), {r['answered']:,} answered, {_when(r['first'])} to {_when(r['last'])}")
+
+
+def _steady_lines(steady: list[dict], st: dict) -> list[str]:
+    """The sources flagged for machine-steady repetition alone."""
+    if not steady:
+        return []
+    s = st["steady"]
+    lines = ["### Machine-steady repetition", "",
+             f"{_n(len(steady), 'outside source')} hit one service over and over at an almost constant gap: "
+             f"{s['min_sessions']}+ sessions in a row, each within {s['max_gap_seconds']:g} seconds of the last, with "
+             f"gaps that vary by no more than {s['max_jitter']:.0%}. A scripted login brute force looks like this "
+             "(CyberStrikeAI's FortiGate runs retried every 1.5 seconds); a person never keeps a gap that even. "
+             "A health check or a monitoring probe can too, so list the ones you expect in known_scanners.csv.", "",
+             "| Source | Built from | Runs |", "|---|---|---|"]
+    for v in steady:
+        more = f"; and {v['runs_total'] - len(v['runs']):,} more" if v["runs_total"] > len(v["runs"]) else ""
+        lines.append(f"| {v['source']} | {_all([SOURCE_TEXT.get(x, x) for x in v['log_sources']])} | "
+                     f"{'; '.join(_steady_run(r) for r in v['runs'])}{more} |")
+    return lines + [""]
+
+
 def _known_bad_line(res: dict) -> str:
     lists = res.get("known_bad_lists") or {}
     parts = []
@@ -156,6 +182,8 @@ def _finding_lines(f: dict, st: dict, map_file: str = "", timeline: bool = False
              f"| Threat hits | {f['threat_evidence']} |"]
     if f.get("known"):
         lines.append(f"| Published attacker address | {_published(f['known'])} |")
+    if f.get("steady"):
+        lines.append(f"| Machine-steady repetition | {'; '.join(_steady_run(r) for r in f['steady'])} |")
     if f.get("notes"):
         lines.append(f"| Notes | {' '.join(f['notes'])} |")
     if map_file:
@@ -229,6 +257,7 @@ def markdown(res: dict) -> str:
         lines += [f"{_n(swept_only, 'other source')} swept many hosts or ports and did not narrow. That "
                   "looks like plain scanning and is not flagged.", ""]
     lines += _known_lines(det.get("known_sources") or [])
+    lines += _steady_lines(det.get("steady_sources") or [], st)
     if map_file:
         replay = (" Its Timeline replays a source's sessions in the order they started, with its bursts and "
                   "pauses." if ex.get("timelines") else "")
@@ -243,6 +272,8 @@ def markdown(res: dict) -> str:
               "- **Published attacker address.** A source on a list of addresses that vendors published for "
               "ARTEX or CyberStrikeAI activity, or on your own known_bad.csv, is flagged whatever its traffic "
               "looked like. The list says who published it and how sure they were.",
+              "- **Machine-steady repetition.** A source that hit one service over and over at an almost "
+              "constant gap, as a scripted login brute force does, is flagged on its own.",
               "- **Levels 2 and 3** add exploit evidence from Palo Alto threat logs, which are not scored yet.",
               "- **Threat logs not provided** means no exploit evidence could be attached. It does not "
               "mean there were no exploit attempts. Threat logs that were read are not scored yet either.", "",
@@ -282,6 +313,9 @@ def markdown(res: dict) -> str:
               f"in that band. A source's pace is only ruled out when {tm['min_timed_share']:.0%}+ of its sessions "
               "have a start time.",
               _known_bad_line(res),
+              f"- Machine-steady repetition: {st['steady']['min_sessions']}+ sessions in a row to one service, each "
+              f"within {st['steady']['max_gap_seconds']:g} seconds of the last, gaps varying by at most "
+              f"{st['steady']['max_jitter']:.0%} of their mean.",
               f"- Never flagged: {', '.join(st['allowlist'] + [k['cidr'] for k in res['known_scanners']]) or 'nothing listed'}."
               + (f" That left out {_n(det['never_flagged_sources'], 'outside source')} with "
                  f"{_n(det['never_flagged_sessions'], 'inbound session')}." if det["never_flagged_sources"] else "")]

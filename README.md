@@ -180,6 +180,18 @@ VPN exits rather than scanners, and the low-confidence Censys rows are hosts see
 not seen attacking: read the confidence before acting on a match. Set `known_bad_bundled` to
 `false` to use only your own list.
 
+### Machine-steady repetition
+
+A scripted login brute force retries at a fixed rate: CyberStrikeAI's FortiGate runs tried a
+password every 1.5 seconds with no jitter. A source that sends `steady.min_sessions` (50) or more
+sessions in a row to one service, each within `steady.max_gap_seconds` (10) of the last, with gaps
+that vary by no more than `steady.max_jitter` (10%) of their mean, is flagged for that alone. Only
+session start times are used, so it works from Zeek or from a Palo Alto log. Palo Alto times are
+whole seconds, so a 1.5-second rate shows up as gaps of 1 and 2. A run whose gaps there are all one
+of two neighbouring whole seconds (a second or more apart) counts as steady too; gaps of 0, 1, 2 and
+3 do not. Health checks and monitoring probes can be just as steady: list the
+ones you expect in `known_scanners.csv`.
+
 A file with one of these names anywhere under the input folder is used without being asked for,
 and each of them changes what gets flagged. So the report says which ones it read (the first line
 under *Settings used*, with "found among the input files" where it was not named on the command
@@ -222,6 +234,11 @@ first is used, a warning names the others, and `--config` settles it.
     "min_cycles": 5,
     "min_pause_share": 0.6,
     "min_timed_share": 0.9
+  },
+  "steady": {
+    "min_sessions": 50,
+    "max_gap_seconds": 10,
+    "max_jitter": 0.1
   },
   "paloalto": {
     "fields": {

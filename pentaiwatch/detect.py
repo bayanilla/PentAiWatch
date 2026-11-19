@@ -21,6 +21,9 @@ How it works, in order:
 8. ``_findings``            one finding per flagged source.
 9. ``_known_sources``       sources on a list of published attacker addresses (knownbad.py) that
                             were not flagged by their traffic: flagged and named all the same.
+10. ``_steady``             sources that hit one service over and over at an almost constant gap,
+                            as a scripted login brute force does: flagged on their own, and
+                            attached to a finding when the source is flagged already.
 
 A source is flagged when probing and narrowing fired and timing either fired too (level 1) or
 could not be judged because its sessions have no start time (tier 0). A source that swept and
@@ -115,6 +118,30 @@ class Finding:
     threat_evidence: str
     notes: list[str] = field(default_factory=list)    # what a reader should know about this finding's data
     known: dict | None = None    # its entry in a list of published attacker addresses, if any
+    steady: list[SteadyRun] = field(default_factory=list)   # machine-steady repetition, if any
+
+
+@dataclass
+class SteadyRun:
+    """One unbroken run of sessions from a source to one service at an almost constant gap."""
+    service: str                 # "host:port/proto"
+    sessions: int
+    answered: int
+    gap_seconds: float           # the typical (mean) gap between session starts
+    jitter: float                # standard deviation of the gaps over their mean
+    whole_seconds: bool          # its times are whole seconds (as on the firewall), so the gaps are too
+    first: str
+    last: str
+
+
+@dataclass
+class SteadySource:
+    """A source whose only evidence is machine-steady repetition (it was not flagged otherwise)."""
+    source: str
+    log_sources: list[str]
+    runs: list[SteadyRun]        # longest first (capped)
+    runs_total: int
+    sessions: int                # all its inbound sessions in the lookback
 
 
 @dataclass
@@ -139,6 +166,7 @@ class KnownSource:
 class Detection:
     findings: list[Finding] = field(default_factory=list)
     known_sources: list[KnownSource] = field(default_factory=list)
+    steady_sources: list[SteadySource] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     lookback_start: str | None = None
     lookback_end: str | None = None
@@ -210,6 +238,14 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
         for f in out.findings:
             f.known = bad.get(f.source)
         out.known_sources = _known_sources(con, bad, {f.source for f in out.findings})
+        steady = _steady(con, cfg)
+        for f in out.findings:
+            f.steady = steady.pop(f.source, [])
+        out.steady_sources = [
+            SteadySource(source=src, log_sources=log_sources(con, src), runs=runs[:MAX_STEADY_RUNS],
+                         runs_total=len(runs), sessions=int(con.execute(
+                             "SELECT count(*) FROM pw_sessions WHERE src_ip = ?", [src]).fetchone()[0]))
+            for src, runs in sorted(steady.items(), key=lambda kv: (-kv[1][0].sessions, kv[0]))]
         listed_but_allowed = sorted(ip for ip in bad if ip in _allowed(con))
         if listed_but_allowed:
             out.warnings.append(f"{len(listed_but_allowed)} source(s) on a list of published attacker addresses are "
@@ -635,6 +671,55 @@ def _known_sources(con, bad: dict[str, dict], flagged: set[str]) -> list[KnownSo
             services_total=len(svc), first_seen=_iso(first), last_seen=_iso(last)))
     rank = {c: i for i, c in enumerate(("high", "medium", "low", ""))}
     return sorted(out, key=lambda k: (rank.get(k.confidence, 3), -k.sessions, k.source))
+
+
+# -- 10. machine-steady repetition ------------------------------------------------------------
+MAX_STEADY_RUNS = 10
+
+
+def _steady(con, cfg: Config) -> dict[str, list[SteadyRun]]:
+    """Per source, its runs of ``steady.min_sessions`` or more sessions to one service, each started
+    no more than ``steady.max_gap_seconds`` after the one before, whose gaps vary by no more than
+    ``steady.max_jitter`` of their mean. Longest run first. Only sessions with a known START time.
+
+    Where every time in a run is a whole second (Palo Alto logs), a steady 1.5-second gap shows up
+    as 1, 2, 1, 2...: the rounding alone spreads the gaps, so a run whose gaps are all one of two
+    neighbouring whole seconds counts as steady too. A pace that really varies shows gaps of 0, 1,
+    2 and 3 there. Below a typical gap of one second many sessions share a second and the rounding
+    hides the pace, so no such allowance is made."""
+    s = cfg.steady
+    rows = con.execute("""
+        WITH t AS (
+            SELECT src_ip, dst_ip, dst_port, proto, start_ts, outcome,
+                   epoch(start_ts) - epoch(lag(start_ts) OVER w) AS gap
+            FROM pw_sessions WHERE list_contains(CAST($timed AS VARCHAR[]), start_method)
+            WINDOW w AS (PARTITION BY src_ip, dst_ip, dst_port, proto ORDER BY start_ts, seq)),
+        r AS (
+            SELECT *, sum(CASE WHEN gap IS NULL OR gap > $max_gap THEN 1 ELSE 0 END) OVER (
+                PARTITION BY src_ip, dst_ip, dst_port, proto ORDER BY start_ts ROWS UNBOUNDED PRECEDING) AS run
+            FROM t),
+        runs AS (
+            SELECT src_ip, dst_ip, dst_port, proto, run, count(*) AS n,
+                   count(*) FILTER (outcome = 'answered') AS answered, min(start_ts) AS first_ts,
+                   max(start_ts) AS last_ts, avg(gap) FILTER (gap <= $max_gap) AS mean_gap,
+                   stddev_pop(gap) FILTER (gap <= $max_gap) AS sd_gap,
+                   min(gap) FILTER (gap <= $max_gap) AS lo_gap, max(gap) FILTER (gap <= $max_gap) AS hi_gap,
+                   bool_and(epoch(start_ts) = floor(epoch(start_ts))) AS whole
+            FROM r GROUP BY ALL)
+        SELECT src_ip, dst_ip, dst_port, proto, n, answered, mean_gap, sd_gap / mean_gap, whole, first_ts, last_ts
+        FROM runs WHERE n >= $min_sessions AND mean_gap > 0
+          AND (sd_gap <= $max_jitter * mean_gap OR (whole AND mean_gap >= 1 AND hi_gap - lo_gap <= 1))
+        ORDER BY src_ip, n DESC, first_ts""",
+                       {"timed": list(TIMED), "max_gap": float(s.max_gap_seconds),
+                        "min_sessions": int(s.min_sessions), "max_jitter": float(s.max_jitter)}).fetchall()
+    out: dict[str, list[SteadyRun]] = {}
+    for src, host, port, proto, n, answered, gap, jitter, whole, first, last in rows:
+        out.setdefault(src, []).append(SteadyRun(
+            service=f"{host}:{port}/{proto}" if port is not None else f"{host}/{proto}", sessions=int(n),
+            answered=int(answered), gap_seconds=round(gap, 2), jitter=round(jitter, 3), whole_seconds=bool(whole),
+            first=_iso(first),
+            last=_iso(last)))
+    return out
 
 
 def _has_table(con, name: str) -> bool:

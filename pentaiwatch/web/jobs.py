@@ -60,8 +60,13 @@ def summary(res: dict) -> dict:
                          "known": bool(f.get("known"))}
                         for f in res["detection"]["findings"]]
                        + [{"source": k["source"], "level": None, "label": k["name"] or "listed",
-                           "hosts": k["hosts"], "timeline": False, "known": True}
-                          for k in res["detection"].get("known_sources") or []]}
+                           "hosts": k["hosts"], "timeline": False, "known": True, "tag": "Published address"}
+                          for k in res["detection"].get("known_sources") or []]
+                       + [{"source": v["source"], "level": None, "label": f"{v['runs'][0]['sessions']:,} sessions "
+                           f"to {v['runs'][0]['service']}, one every {v['runs'][0]['gap_seconds']:g} s",
+                           "hosts": len({r["service"].split(":")[0].split("/")[0] for r in v["runs"]}),
+                           "timeline": False, "tag": "Machine-steady"}
+                          for v in res["detection"].get("steady_sources") or []]}
 
 
 class Jobs:

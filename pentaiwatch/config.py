@@ -77,6 +77,19 @@ class Timing:
     min_timed_share: float = 0.90
 
 
+@dataclass
+class Steady:
+    """Machine-steady repetition: one source hits one service over and over at an almost constant
+    gap, as a scripted login brute force does (CyberStrikeAI's FortiGate runs retried every 1.5
+    seconds with no jitter). A person, or an agent that stops to think, never keeps a gap that even.
+    Only session START times are used."""
+    min_sessions: int = 50               # sessions in one unbroken run to the same service
+    max_gap_seconds: float = 10          # a longer gap between two starts ends the run
+    # How even the gaps are: their standard deviation divided by their mean. 0.10 means the gaps
+    # stay within about a tenth of their typical length.
+    max_jitter: float = 0.10
+
+
 # -- Palo Alto logs: nothing about the export's layout is fixed in code ----------------------
 # CSV exports with a header row: the column names that may hold each field. The first one the
 # file has is used. Names are compared ignoring case, spaces and punctuation, so "Source address",
@@ -161,6 +174,7 @@ class Config:
     probing: Probing = field(default_factory=Probing)
     narrowing: Narrowing = field(default_factory=Narrowing)
     timing: Timing = field(default_factory=Timing)
+    steady: Steady = field(default_factory=Steady)
     paloalto: PaloAlto = field(default_factory=PaloAlto)
     # Filled by the pipeline from network_map.csv and known_scanners.csv (not settings).
     networks: list[dict] = field(default_factory=list, metadata={"runtime": True})
@@ -262,7 +276,8 @@ def check(cfg: Config, name: str = "settings") -> None:
                 "timing.max_burst_sessions": cfg.timing.max_burst_sessions,
                 "timing.pause_min_seconds": cfg.timing.pause_min_seconds,
                 "timing.pause_max_seconds": cfg.timing.pause_max_seconds,
-                "timing.min_cycles": cfg.timing.min_cycles}
+                "timing.min_cycles": cfg.timing.min_cycles,
+                "steady.max_gap_seconds": cfg.steady.max_gap_seconds}
     for key, value in positive.items():
         if not value > 0:
             raise UserError(f"{name}: {key} must be more than 0")
@@ -270,10 +285,14 @@ def check(cfg: Config, name: str = "settings") -> None:
               "narrowing.max_answered_share": cfg.narrowing.max_answered_share,
               "narrowing.min_focus_share": cfg.narrowing.min_focus_share,
               "timing.min_pause_share": cfg.timing.min_pause_share,
-              "timing.min_timed_share": cfg.timing.min_timed_share}
+              "timing.min_timed_share": cfg.timing.min_timed_share,
+              "steady.max_jitter": cfg.steady.max_jitter}
     for key, value in shares.items():
         if not 0 <= value <= 1:
             raise UserError(f"{name}: {key} must be between 0 and 1 (0.7 means 70%)")
+    if cfg.steady.min_sessions < 3:
+        raise UserError(f"{name}: steady.min_sessions must be 3 or more: two sessions have one gap, which is "
+                        "always even")
     if cfg.window_hours > cfg.lookback_hours:
         raise UserError(f"{name}: window_hours cannot be longer than lookback_hours")
     t = cfg.timing
