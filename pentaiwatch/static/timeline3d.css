@@ -1,0 +1,57 @@
+/* Timeline (time tunnel): a full-screen layer above the map, in the map's own tokens.
+   After VulnScope MAX's timeline3d.css, with only the rules this page uses. */
+#timeline-view{position:fixed;inset:0;z-index:20;background:var(--bg);color:var(--fg);overflow:hidden;outline:none}
+#timeline-view[hidden]{display:none}
+#tl-canvas{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:grab;touch-action:none}
+#tl-canvas.drag{cursor:grabbing}#tl-canvas.hover{cursor:pointer}
+#tl-labels{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+#tl-labels .tl-l{position:absolute;left:0;top:0;font-size:11.5px;white-space:nowrap;color:var(--fg);text-shadow:0 1px 2px #000,0 0 4px #000}
+#tl-labels .lane{font-weight:600}
+#tl-labels .day{color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
+#tl-labels .inet{font-weight:700;letter-spacing:.06em;color:var(--muted)}
+#tl-labels .mark{color:var(--answered);font-weight:600;font-size:11px;font-variant-numeric:tabular-nums}
+#tl-labels .fired{color:var(--tl-level,var(--fg));font-weight:600;font-size:11px;letter-spacing:.04em}
+#tl-labels .bn{font-size:11px;font-weight:600;font-variant-numeric:tabular-nums}
+#tl-labels .pz{font-size:11px;color:var(--tl-level,var(--fg));font-variant-numeric:tabular-nums}
+#timeline-view .tl-top{position:absolute;top:14px;left:18px;right:18px;display:flex;align-items:flex-start;gap:8px;pointer-events:none;z-index:2}
+#timeline-view .tl-top>*{pointer-events:auto}
+#timeline-view .tl-title{margin-right:auto;pointer-events:none}
+#timeline-view .tl-title .s{font-size:12px;color:var(--muted);margin-top:4px;font-variant-numeric:tabular-nums}
+#tl-about-toggle{width:34px;padding:6px 0;font-weight:700}
+#tl-about-toggle[aria-expanded="true"]{background:var(--sel);border-color:var(--accent)}
+#tl-about{position:absolute;left:18px;right:18px;bottom:calc(var(--tl-legend-h,36px) + 52px);z-index:3;width:max-content;max-width:min(620px,calc(100% - 36px));margin:0 auto;
+padding:7px 11px;font-size:12.5px;line-height:1.45;color:var(--muted);background:var(--panel);border:1px solid var(--line);border-radius:var(--r);box-shadow:0 4px 12px rgba(0,0,0,.3)}
+#tl-about[hidden]{display:none}#tl-about b{color:var(--fg);font-weight:600}
+#timeline-view .tl-side{position:absolute;right:18px;top:64px;width:300px;max-height:calc(100% - var(--tl-legend-h,36px) - 128px);overflow:auto;padding:12px 14px;
+background:var(--panel);border:1px solid var(--line);border-radius:var(--r);font-size:12.5px;color:var(--muted);z-index:2}
+#timeline-view .tl-side h3{margin:0 0 8px;font-size:12.5px;font-weight:600;color:var(--fg)}
+#timeline-view .tl-side h3:not(:first-child){margin-top:14px}
+#timeline-view .tl-side .who{font-size:15px;color:var(--fg)}
+#timeline-view .tl-side .verdict{display:flex;gap:8px;align-items:baseline;margin:8px 0;color:var(--fg)}
+#timeline-view .tl-side .kv{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:3px 0;border-bottom:1px solid var(--line)}
+#timeline-view .tl-side .kv b{color:var(--fg);font-weight:600;text-align:right;font-variant-numeric:tabular-nums}
+#timeline-view .tl-side p{margin:8px 0 0;font-size:11.5px;line-height:1.5}
+#tl-pick{width:100%;font:inherit;font-size:12.5px;font-family:var(--mono);color:var(--fg);background:var(--bg);border:1px solid var(--ctl-line);border-radius:var(--r);padding:5px 6px}
+#tl-pick:focus-visible,#tl-scrub:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+#tl-scrub{width:100%;accent-color:var(--accent);margin:2px 0 6px}
+#tl-play{width:100%;margin:0 0 8px;padding:5px 12px}
+#timeline-view .tl-winbtns{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px}
+#timeline-view .tl-winbtns button{padding:3px 8px;font-size:12px}
+#timeline-view .tl-winbtns button.on{border-color:var(--accent);background:var(--sel)}
+#timeline-view .tl-legend{position:absolute;left:0;right:0;bottom:0;display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center;padding:8px 18px;
+font-size:11.5px;color:var(--muted);background:var(--bg);border-top:1px solid var(--line);z-index:1}
+#timeline-view .tl-legend span{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+#timeline-view .tl-legend i{display:inline-block;width:16px;height:2px;border-radius:1px;background:var(--c)}
+#timeline-view .tl-legend i.bar{width:14px;height:7px}
+#timeline-view .tl-legend i.rail{width:22px;height:4px}
+#timeline-view .tl-legend .cal{margin-left:auto;white-space:normal}
+#timeline-view .tl-cams{position:absolute;right:18px;bottom:calc(var(--tl-legend-h,36px) + 12px);display:flex;gap:6px;z-index:2}
+#timeline-view .tl-cams button{padding:4px 10px;font-size:12px}
+#timeline-view .tl-cams button[aria-pressed="true"]{border-color:var(--accent);background:var(--sel)}
+#timeline-view .tl-cams button[aria-pressed="false"]{opacity:.7}
+#tl-tip{position:absolute;pointer-events:none;z-index:4;max-width:340px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+padding:8px 10px;font-size:12px;line-height:1.5;box-shadow:0 8px 30px rgba(0,0,0,.5)}
+#tl-tip[hidden]{display:none}#tl-tip .m{color:var(--muted)}
+/* the way in from a source's panel on the map */
+#panel .tlgo{display:block;width:100%;margin-top:14px}
+@media (max-width:900px){#timeline-view .tl-side{display:none}#timeline-view .tl-legend .cal{display:none}}

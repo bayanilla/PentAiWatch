@@ -1,0 +1,264 @@
+"""Zeek ASCII/JSON log reader with explicit stream classification."""
+from __future__ import annotations
+
+import json
+import os
+import re
+
+from ..errors import MissingField
+from ..schema import START_NONE, START_ZEEK_TS, Flow, ParseStats, ThreatEvent, ZeekEvent
+from ._util import clean_ip, clean_port, clean_ports, clean_proto, count, open_text, parse_ts, text, to_int
+
+ESTABLISHED_STATES = {"SF", "S1", "S2", "S3", "RSTO", "RSTR"}
+# REJ: the responder answered the SYN with a reset. Usually the host itself refused (closed port or
+# host firewall), so it is recorded as "reject", not as a network firewall "deny". RSTOS0/RSTRH are
+# aborted handshakes and count as plain attempts.
+REJECTED_STATES = {"REJ"}
+# Zeek's own bookkeeping logs say nothing about the network; they are skipped. capture_loss is
+# kept as a data-quality signal (see capture_loss_pct in the results), not counted as activity.
+BOOKKEEPING_STREAMS = {"loaded_scripts", "packet_filter", "stats", "reporter", "telemetry", "print",
+                       "broker", "cluster", "config"}
+_LOSS_MSG = re.compile(r"loss rate above ([0-9.]+)%")
+
+
+def stream_from_name(path: str) -> str:
+    """Use the upload-safe basename; never infer a stream from shared ID fields."""
+    name = os.path.basename(path)
+    name = re.sub(r"^\d+_", "", name)
+    name = re.sub(r"\.(?:log|json)(?:\.gz)?$", "", name, flags=re.I)
+    name = re.sub(r"\.\d{4}-\d{2}-\d{2}(?:[-_T].*)?$", "", name)
+    return name or "unknown"
+
+
+def _two_way(rec: dict, state: str, proto: str) -> bool:
+    """Both sides sent packets in a session Zeek did not see start (a capture that began
+    mid-stream, OTH) or saw only part of (SH/SHR): an ACK or data from each side in the history.
+    For UDP/ICMP, packets in both directions (a ping that was answered). Completed handshakes are
+    covered by ESTABLISHED_STATES."""
+    if proto == "tcp":
+        hist = str(rec.get("history") or "").replace("^", "")
+        return (state in ("OTH", "SH", "SHR") and any(c in hist for c in "AD")
+                and any(c in hist for c in "ad"))
+    return count(rec.get("orig_pkts")) > 0 and count(rec.get("resp_pkts")) > 0
+
+
+def _to_flow(rec: dict, stats: ParseStats) -> Flow | None:
+    if not any(k in rec for k in ("conn_state", "orig_bytes", "resp_bytes", "history", "duration")):
+        stats.drop("conn record missing connection fields")
+        return None
+    if "conn_state" not in rec:
+        # The detection reads every session's outcome from conn_state; without it nothing can be
+        # scored, so the run stops instead of quietly reporting no activity.
+        raise MissingField("Zeek conn records have no conn_state field. The detection reads each "
+                           "session's outcome (failed or completed) from it; export conn.log with "
+                           "conn_state included.")
+    src, dst = clean_ip(rec.get("id.orig_h")), clean_ip(rec.get("id.resp_h"))
+    if not src or not dst:
+        stats.drop("missing or invalid IP")
+        return None
+    state = text(rec.get("conn_state")).upper()
+    # Filebeat drops orig_bytes/resp_bytes; fall back to the IP-level counts only when absent.
+    b_out = count(rec["orig_bytes"] if "orig_bytes" in rec else rec.get("orig_ip_bytes"))
+    b_in = count(rec["resp_bytes"] if "resp_bytes" in rec else rec.get("resp_ip_bytes"))
+    ts = parse_ts(rec.get("ts"))
+    if ts is None:
+        stats.note("some rows had no parseable timestamp (kept, untimed)")
+    proto = clean_proto(rec.get("proto"))
+    src_port, dst_port = clean_ports(proto, rec.get("id.orig_p"), rec.get("id.resp_p"))
+    return Flow(
+        ts=ts, src_ip=src, dst_ip=dst, src_port=src_port, dst_port=dst_port, proto=proto,
+        action="reject" if state in REJECTED_STATES else "allow",
+        established=(state in ESTABLISHED_STATES or (b_out > 0 and b_in > 0)
+                     or _two_way(rec, state, proto)),
+        bytes_out=b_out, bytes_in=b_in, app=text(rec.get("service")),
+        # Kept for the detector: the raw connection state, packets back from the responder, and
+        # the fact that Zeek's ts is always the session START (conn.log is written at close).
+        state=state, pkts_in=to_int(rec.get("resp_pkts")) if "resp_pkts" in rec else None,
+        start_method=START_ZEEK_TS if ts is not None else START_NONE,
+    )
+
+
+def _notice(rec: dict, stats: ParseStats) -> ThreatEvent | ZeekEvent | None:
+    src, dst = clean_ip(rec.get("src") or rec.get("id.orig_h")), clean_ip(rec.get("dst") or rec.get("id.resp_h"))
+    if not src or not dst:
+        loss = _LOSS_MSG.search(str(rec.get("msg") or ""))
+        if str(rec.get("note") or "").startswith("CaptureLoss::") and loss:
+            # The sensor dropped packets: kept as a data-quality signal, not an alert about a host.
+            return ZeekEvent(ts=parse_ts(rec.get("ts")), stream="capture_loss", uid="", src_ip=None,
+                             dst_ip=None, fields={"percent_lost": float(loss[1]), "note": rec.get("note")})
+        stats.drop("notice without source/destination IP")
+        return None
+    actions = rec.get("actions") or ""
+    actions = ",".join(map(text, actions)) if isinstance(actions, list) else text(actions)
+    return ThreatEvent(ts=parse_ts(rec.get("ts")), src_ip=src, dst_ip=dst,
+                       dst_port=clean_port(rec.get("p") or rec.get("id.resp_p")),
+                       name=" - ".join(text(x) for x in (rec.get("note"), rec.get("msg")) if x) or "Zeek notice",
+                       action="block" if "DROP" in actions.upper() else "alert")
+
+
+def _brimcap_alert(rec: dict, stats: ParseStats) -> ThreatEvent | None:
+    src, dst = clean_ip(rec.get("src_ip")), clean_ip(rec.get("dest_ip"))
+    if not src or not dst:
+        stats.drop("alert without source/destination IP")
+        return None
+    return ThreatEvent(ts=parse_ts(rec.get("ts") or rec.get("timestamp")), src_ip=src, dst_ip=dst,
+                       dst_port=clean_port(rec.get("dest_port")),
+                       name=text(rec.get("alert.signature")) or "Suricata alert",
+                       severity=str(rec.get("alert.severity") or ""),
+                       action="block" if rec.get("alert.action") == "blocked" else "alert")
+
+
+def _event(rec: dict, stream: str) -> ZeekEvent:
+    return ZeekEvent(ts=parse_ts(rec.get("ts")), stream=stream, uid=str(rec.get("uid") or ""),
+                     src_ip=clean_ip(rec.get("id.orig_h") or rec.get("src")),
+                     dst_ip=clean_ip(rec.get("id.resp_h") or rec.get("dst")), fields=rec)
+
+
+def _decode_separator(value: str) -> str:
+    try:
+        return value.encode("utf-8").decode("unicode_escape")
+    except UnicodeError:
+        return value
+
+
+def _typed_value(value: str, kind: str, set_sep: str, empty: str, unset: str):
+    if value == unset:
+        return None
+    if kind.startswith(("set[", "vector[")):
+        if value == empty:
+            return []
+        inner = kind[kind.find("[") + 1:-1]
+        return [_typed_value(v, inner, set_sep, empty, unset) for v in value.split(set_sep)]
+    if value == empty:
+        return ""
+    try:
+        if kind in ("count", "int", "port"):
+            return int(value)
+        if kind in ("double", "time", "interval"):
+            return float(value)
+        if kind == "bool":
+            return value in ("T", "true")
+    except ValueError:
+        pass
+    return value
+
+
+def _flatten(rec: dict) -> dict:
+    """Zui/Brim exports nest connection IDs ({"id": {"orig_h": ...}}); Zeek writes "id.orig_h"."""
+    if not any(isinstance(v, dict) for v in rec.values()):
+        return rec
+    out = {}
+    for k, v in rec.items():
+        if isinstance(v, dict):
+            for k2, v2 in _flatten(v).items():
+                out[f"{k}.{k2}"] = v2
+        else:
+            out[k] = v
+    return out
+
+
+def _json_array(fh, chunk: int = 1 << 20):
+    """Stream the objects of one JSON array (a Zui/Brim export) without loading the whole file."""
+    dec, buf, pos = json.JSONDecoder(), fh.read(chunk), 0
+    pos = buf.index("[") + 1
+    while True:
+        while True:
+            while pos < len(buf) and buf[pos] in " \t\r\n,":
+                pos += 1
+            if pos < len(buf) and buf[pos] == "]":
+                return
+            try:
+                obj, end = dec.raw_decode(buf, pos)
+                break
+            except json.JSONDecodeError:
+                more = fh.read(chunk)
+                if not more:
+                    if buf[pos:].strip():
+                        raise
+                    return
+                buf, pos = buf[pos:] + more, 0
+        yield obj
+        pos = end
+        if pos > chunk:
+            buf, pos = buf[pos:], 0
+
+
+def parse(path: str, stats: ParseStats):
+    """Yield Flow, ThreatEvent and ZeekEvent records one at a time."""
+    sep, fields, types, stream = "\t", None, None, stream_from_name(path)
+    set_sep, empty, unset = ",", "(empty)", "-"
+    generic_streams: set[str] = set()
+    with open_text(path) as fh:
+        is_array = fh.read(64).lstrip().startswith("[")
+    with open_text(path) as fh:
+        for line in (_json_array(fh) if is_array else fh):
+            if isinstance(line, dict):       # one record of a Zui/Brim JSON export
+                stats.read += 1
+                rec = _flatten(line)
+                row_stream = str(rec.get("_path") or stream)
+            elif not isinstance(line, str):
+                stats.read += 1
+                stats.drop("malformed JSON")
+                continue
+            else:
+                line = line.rstrip("\r\n")
+                if not line.strip():
+                    continue
+                if line.startswith("#"):
+                    if line.startswith("#separator "):
+                        sep = _decode_separator(line.split(" ", 1)[1]) or sep     # an empty one is unusable
+                    elif sep in line:
+                        key, value = line.split(sep, 1)
+                        if key == "#fields":
+                            fields = value.split(sep)
+                        elif key == "#types":
+                            types = value.split(sep)
+                        elif key == "#path":
+                            stream = value.strip()
+                        elif key == "#set_separator":
+                            set_sep = value
+                        elif key == "#empty_field":
+                            empty = value
+                        elif key == "#unset_field":
+                            unset = value
+                    continue
+                stats.read += 1
+                if line.lstrip().startswith("{"):
+                    try:
+                        rec = json.loads(line)
+                        if not isinstance(rec, dict):
+                            raise ValueError
+                    except (json.JSONDecodeError, ValueError):
+                        stats.drop("malformed JSON")
+                        continue
+                    rec = _flatten(rec)
+                    row_stream = str(rec.get("_path") or stream)
+                else:
+                    if fields is None:
+                        stats.drop("no #fields header")
+                        continue
+                    vals = line.split(sep)
+                    if len(vals) != len(fields):
+                        stats.drop("column count mismatch")
+                        continue
+                    row_types = types if types and len(types) == len(fields) else ["string"] * len(fields)
+                    rec = {k: _typed_value(v, kind, set_sep, empty, unset)
+                           for k, v, kind in zip(fields, vals, row_types)}
+                    row_stream = stream
+            if row_stream in BOOKKEEPING_STREAMS:
+                stats.drop("Zeek bookkeeping log, not network activity")
+                continue
+            if row_stream == "conn":
+                item = _to_flow(rec, stats)
+            elif row_stream == "notice":
+                item = _notice(rec, stats)
+            elif row_stream == "alert" and rec.get("event_type") == "alert":
+                item = _brimcap_alert(rec, stats)    # Suricata alert inside a Zui/Brim export
+            else:
+                item = _event(rec, row_stream)
+                generic_streams.add(row_stream)
+            if item is not None:
+                yield item
+    if generic_streams:
+        stats.note("only conn sessions are used; other Zeek streams ("
+                   + ", ".join(sorted(generic_streams)[:6]) + ") are read and set aside")
