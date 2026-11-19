@@ -96,15 +96,21 @@ def _known_lines(known: list[dict]) -> list[str]:
     for k in known:
         more = f" and {k['services_total'] - len(k['services']):,} more" if k["services_total"] > len(k["services"]) else ""
         lines.append(f"| {k['source']} | {_published(k)} | {k['sessions']:,} ({k['answered']:,} answered) | "
-                     f"{k['hosts']:,} | {', '.join(k['services'])}{more} | {_when(k['first_seen'])} to "
+                     f"{k['hosts']:,} | {', '.join(k['services'])}{more}{_targets_note(k)} | {_when(k['first_seen'])} to "
                      f"{_when(k['last_seen'])} |")
     return lines + [""]
+
+
+def _targets_note(item: dict) -> str:
+    """'; named targets: ...' after a list of services, when any of them is a named target."""
+    return f"; named targets: {', '.join(item['targets'])}" if item.get("targets") else ""
 
 
 def _steady_run(r: dict) -> str:
     spread = ("times in whole seconds, so the gaps vary only by the rounding" if r.get("whole_seconds")
               and r["jitter"] > 0 else f"gaps vary by {r['jitter']:.0%}")
-    return (f"{r['service']}: {r['sessions']:,} sessions, one every {r['gap_seconds']:g} s "
+    kind = f" ({r['target']})" if r.get("target") else ""
+    return (f"{r['service']}{kind}: {r['sessions']:,} sessions, one every {r['gap_seconds']:g} s "
             f"({spread}), {r['answered']:,} answered, {_when(r['first'])} to {_when(r['last'])}")
 
 
@@ -125,6 +131,12 @@ def _steady_lines(steady: list[dict], st: dict) -> list[str]:
         lines.append(f"| {v['source']} | {_all([SOURCE_TEXT.get(x, x) for x in v['log_sources']])} | "
                      f"{'; '.join(_steady_run(r) for r in v['runs'])}{more} |")
     return lines + [""]
+
+
+def _targets_line(st: dict) -> str:
+    named = "; ".join(f"{name} (port{'s' if len(ports) > 1 else ''} {', '.join(str(p) for p in sorted(ports))})"
+                      for name, ports in st.get("targets", {}).items())
+    return f"- Named targets: {named or 'none'}."
 
 
 def _known_bad_line(res: dict) -> str:
@@ -175,6 +187,7 @@ def _finding_lines(f: dict, st: dict, map_file: str = "", timeline: bool = False
              f"| Narrowing start | {_when(f['narrowing_start'])} |",
              f"| After narrowing | {f['focus_share']:.0%} of its sessions went to services that answered |",
              f"| Hosts hit | {', '.join(f['hosts_hit'])} |",
+             *([f"| Named targets | {', '.join(f['targets'])} |"] if f.get("targets") else []),
              *_timing_rows(f, st),
              f"| Campaign span | {_span(f['campaign_hours'])}, {_when(f['first_seen'])} to "
              f"{_when(f['last_seen'])}, {f['sessions']:,} sessions |",
@@ -192,11 +205,12 @@ def _finding_lines(f: dict, st: dict, map_file: str = "", timeline: bool = False
         lines.append(f"| Timeline | [Replay its sessions in the order they started]({map_file}#timeline={f['source']}) |")
     lines += ["",
              "Services it narrowed to:", "",
-             "| Service | Network | Completed sessions | First return |", "|---|---|---|---|"]
+             "| Service | Named target | Network | Completed sessions | First return |", "|---|---|---|---|---|"]
     for s in f["services"]:
-        lines.append(f"| {_service(s)} | {s['network'] or 'unmapped'} | {s['sessions']:,} | {_when(s['first_return'])} |")
+        lines.append(f"| {_service(s)} | {s.get('target') or ''} | {s['network'] or 'unmapped'} | {s['sessions']:,} | "
+                     f"{_when(s['first_return'])} |")
     if f["services_total"] > len(f["services"]):
-        lines.append(f"| and {f['services_total'] - len(f['services']):,} more | | | |")
+        lines.append(f"| and {f['services_total'] - len(f['services']):,} more | | | | |")
     return lines + [""]
 
 
@@ -274,6 +288,10 @@ def markdown(res: dict) -> str:
               "looked like. The list says who published it and how sure they were.",
               "- **Machine-steady repetition.** A source that hit one service over and over at an almost "
               "constant gap, as a scripted login brute force does, is flagged on its own.",
+              "- **Named targets** are the kinds of service the ARTEX and CyberStrikeAI reporting says the agents "
+              "went for (edge-device consoles and VPNs, AI model gateways, databases, remote access), by port. "
+              "They are named so you can check those services first; they do not change whether a source is "
+              "flagged.",
               "- **Levels 2 and 3** add exploit evidence from Palo Alto threat logs, which are not scored yet.",
               "- **Threat logs not provided** means no exploit evidence could be attached. It does not "
               "mean there were no exploit attempts. Threat logs that were read are not scored yet either.", "",
@@ -316,6 +334,7 @@ def markdown(res: dict) -> str:
               f"- Machine-steady repetition: {st['steady']['min_sessions']}+ sessions in a row to one service, each "
               f"within {st['steady']['max_gap_seconds']:g} seconds of the last, gaps varying by at most "
               f"{st['steady']['max_jitter']:.0%} of their mean.",
+              _targets_line(st),
               f"- Never flagged: {', '.join(st['allowlist'] + [k['cidr'] for k in res['known_scanners']]) or 'nothing listed'}."
               + (f" That left out {_n(det['never_flagged_sources'], 'outside source')} with "
                  f"{_n(det['never_flagged_sessions'], 'inbound session')}." if det["never_flagged_sources"] else "")]

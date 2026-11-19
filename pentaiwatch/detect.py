@@ -66,6 +66,21 @@ MAX_SERVICES_LISTED = 25
 TIMED = (START_ZEEK_TS, START_FIELD, START_END_MINUS_ELAPSED)
 
 
+def target_ports(cfg: Config) -> dict[int, str]:
+    """Port -> the name of the kind of target it is (the ``targets`` setting)."""
+    return {port: name for name, ports in cfg.targets.items() for port in ports}
+
+
+def target_of(ports: dict[int, str], port, proto) -> str:
+    """The kind of target a service is ('' when none): TCP and UDP only, a ping has no port."""
+    return ports.get(port, "") if port is not None and proto in ("tcp", "udp") else ""
+
+
+def _names(ports: dict[int, str], services) -> list[str]:
+    """The kinds of target among (port, proto) pairs, in the order they first appear."""
+    return list(dict.fromkeys(t for port, proto in services if (t := target_of(ports, port, proto))))
+
+
 @dataclass
 class Service:
     """A service the source narrowed onto."""
@@ -75,6 +90,7 @@ class Service:
     network: str                 # name from network_map.csv, '' when unmapped
     sessions: int                # completed sessions from this source
     first_return: str            # when the source first came back to it (UTC)
+    target: str = ""             # the kind of target its port is (the targets setting), '' when none
 
 
 @dataclass
@@ -119,6 +135,7 @@ class Finding:
     notes: list[str] = field(default_factory=list)    # what a reader should know about this finding's data
     known: dict | None = None    # its entry in a list of published attacker addresses, if any
     steady: list[SteadyRun] = field(default_factory=list)   # machine-steady repetition, if any
+    targets: list[str] = field(default_factory=list)  # kinds of target among all the services it narrowed onto
 
 
 @dataclass
@@ -132,6 +149,7 @@ class SteadyRun:
     whole_seconds: bool          # its times are whole seconds (as on the firewall), so the gaps are too
     first: str
     last: str
+    target: str = ""             # the kind of target the service is, '' when none
 
 
 @dataclass
@@ -160,6 +178,7 @@ class KnownSource:
     services_total: int
     first_seen: str
     last_seen: str
+    targets: list[str] = field(default_factory=list)  # kinds of target among all the services it reached
 
 
 @dataclass
@@ -237,7 +256,7 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
         out.findings = _findings(con, cfg, nm)
         for f in out.findings:
             f.known = bad.get(f.source)
-        out.known_sources = _known_sources(con, bad, {f.source for f in out.findings})
+        out.known_sources = _known_sources(con, bad, {f.source for f in out.findings}, target_ports(cfg))
         steady = _steady(con, cfg)
         for f in out.findings:
             f.steady = steady.pop(f.source, [])
@@ -614,6 +633,7 @@ def _findings(con, cfg: Config, nm: NetMap) -> list[Finding]:
         WHERE s.flagged ORDER BY p.src_ip""").fetchall()
     out = []
     threat_text = _threat_text(con)
+    tports = target_ports(cfg)
     for src, k, p_start, p_end, services, hosts, ports, failed, answered, n_start, focus, status, n, timed in rows:
         svc_rows = con.execute("""
             SELECT dst_ip, dst_port, proto, answered, return_ts FROM pw_narrow_svc
@@ -630,7 +650,8 @@ def _findings(con, cfg: Config, nm: NetMap) -> list[Finding]:
         methods = dict(con.execute(
             "SELECT start_method, count(*) FROM pw_sessions WHERE src_ip = ? GROUP BY 1 ORDER BY 1", [src]).fetchall())
         listed = [Service(host=h, port=port, proto=proto, network=nm.name(h), sessions=int(c),
-                          first_return=_iso(ts)) for h, port, proto, c, ts in svc_rows[:MAX_SERVICES_LISTED]]
+                          first_return=_iso(ts), target=target_of(tports, port, proto))
+                  for h, port, proto, c, ts in svc_rows[:MAX_SERVICES_LISTED]]
         agentic = status == "agentic"
         out.append(Finding(
             source=src, level=1 if agentic else 0, label=LEVEL_1 if agentic else TIER_0, log_sources=sensors,
@@ -641,7 +662,7 @@ def _findings(con, cfg: Config, nm: NetMap) -> list[Finding]:
             sessions=int(n), first_seen=_iso(first), last_seen=_iso(last),
             campaign_hours=round((last - first).total_seconds() / 3600, 2),
             timing=_pace(con, cfg, src, status, int(n), int(timed)),
-            threat_evidence=threat_text, notes=notes))
+            threat_evidence=threat_text, notes=notes, targets=_names(tports, [(r[1], r[2]) for r in svc_rows])))
     return sorted(out, key=lambda f: (-f.level, -f.sessions, f.source))
 
 
@@ -649,7 +670,7 @@ def _findings(con, cfg: Config, nm: NetMap) -> list[Finding]:
 MAX_KNOWN_SERVICES = 10
 
 
-def _known_sources(con, bad: dict[str, dict], flagged: set[str]) -> list[KnownSource]:
+def _known_sources(con, bad: dict[str, dict], flagged: set[str], tports: dict[int, str]) -> list[KnownSource]:
     """Sources with inbound sessions that are on a list of published attacker addresses and were
     not already flagged by their traffic (those findings carry the entry themselves)."""
     out = []
@@ -668,7 +689,8 @@ def _known_sources(con, bad: dict[str, dict], flagged: set[str]) -> list[KnownSo
             list_name=entry["list_name"], log_sources=log_sources(con, src), sessions=int(sessions), answered=int(answered),
             hosts=int(hosts), services=[f"{h}:{p}/{pr}" if p is not None else f"{h}/{pr}" for h, p, pr, _ in
                                         svc[:MAX_KNOWN_SERVICES]],
-            services_total=len(svc), first_seen=_iso(first), last_seen=_iso(last)))
+            services_total=len(svc), first_seen=_iso(first), last_seen=_iso(last),
+            targets=_names(tports, [(p, pr) for _, p, pr, _ in svc])))
     rank = {c: i for i, c in enumerate(("high", "medium", "low", ""))}
     return sorted(out, key=lambda k: (rank.get(k.confidence, 3), -k.sessions, k.source))
 
@@ -713,12 +735,12 @@ def _steady(con, cfg: Config) -> dict[str, list[SteadyRun]]:
                        {"timed": list(TIMED), "max_gap": float(s.max_gap_seconds),
                         "min_sessions": int(s.min_sessions), "max_jitter": float(s.max_jitter)}).fetchall()
     out: dict[str, list[SteadyRun]] = {}
+    tports = target_ports(cfg)
     for src, host, port, proto, n, answered, gap, jitter, whole, first, last in rows:
         out.setdefault(src, []).append(SteadyRun(
             service=f"{host}:{port}/{proto}" if port is not None else f"{host}/{proto}", sessions=int(n),
             answered=int(answered), gap_seconds=round(gap, 2), jitter=round(jitter, 3), whole_seconds=bool(whole),
-            first=_iso(first),
-            last=_iso(last)))
+            first=_iso(first), last=_iso(last), target=target_of(tports, port, proto)))
     return out
 
 

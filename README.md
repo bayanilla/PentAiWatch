@@ -192,6 +192,19 @@ of two neighbouring whole seconds (a second or more apart) counts as steady too;
 3 do not. Health checks and monitoring probes can be just as steady: list the
 ones you expect in `known_scanners.csv`.
 
+### Named targets
+
+The ARTEX and CyberStrikeAI reporting says what the agents went for: FortiGate and other firewall
+consoles and VPNs, AI model gateways such as Ollama and LiteLLM, databases, and remote access. The
+`targets` setting names those kinds of service by TCP or UDP port. When a flagged source narrowed
+onto one, the report says so on the finding, in its services table, and beside machine-steady runs
+and published addresses, so you know which services to check first. Naming a target never changes
+whether a source is flagged. Port 443 is left out on purpose: too much else answers on it.
+
+Your own names are added to the defaults. Giving a default name replaces its ports, and an empty
+list drops it, for example `"targets": {"Remote access": [], "Backup console": [9392]}`. Each port
+can have one name only.
+
 A file with one of these names anywhere under the input folder is used without being asked for,
 and each of them changes what gets flagged. So the report says which ones it read (the first line
 under *Settings used*, with "found among the input files" where it was not named on the command
@@ -239,6 +252,12 @@ first is used, a warning names the others, and `--config` settles it.
     "min_sessions": 50,
     "max_gap_seconds": 10,
     "max_jitter": 0.1
+  },
+  "targets": {
+    "Edge device admin or VPN": [541, 4443, 8443, 9443, 10443],
+    "AI model gateway": [4000, 11434],
+    "Database": [1433, 1521, 3306, 5432, 6379, 9200, 27017],
+    "Remote access": [22, 3389, 5985, 5986]
   },
   "paloalto": {
     "fields": {
