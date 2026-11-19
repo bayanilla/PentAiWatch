@@ -148,14 +148,18 @@ def _done(app, run_id: str, status: dict, where: str, heading: str) -> str:
         for f in flagged:
             ip = str(f.get("source") or "")
             level = f.get("level")
-            tag = "Tier 0" if level == 0 else f"Level {level}"
+            tag = "Published address" if level is None else "Tier 0" if level == 0 else f"Level {level}"
             link = quote(ip, safe=":.")
-            extras = [f'<a href="explorer.html#source={link}" target="_blank" rel="noopener">on the map</a>']
+            extras = ([] if level is None else
+                      [f'<a href="explorer.html#source={link}" target="_blank" rel="noopener">on the map</a>'])
+            if f.get("known") and level is not None:
+                extras.append("published attacker address")
             if f.get("timeline"):
                 extras.append(f'<a href="explorer.html#timeline={link}" target="_blank" rel="noopener">Timeline</a>')
             items.append(f'<li><code>{html.escape(ip)}</code> <span class="level{" t0" if level == 0 else ""}">'
                          f"{tag}</span>: {html.escape(str(f.get('label') or ''))}, "
-                         f"{_plural(int(f.get('hosts') or 0), 'host')} hit · {' · '.join(extras)}</li>")
+                         f"{_plural(int(f.get('hosts') or 0), 'host')} hit"
+                         + (f" · {' · '.join(extras)}" if extras else "") + "</li>")
         lines.append('<ul class="flagged">' + "".join(items) + "</ul>")
     opens = [f'<a href="{n}" target="_blank" rel="noopener">{t}</a>'
              for t, n in (("Open the report", "report.html"), ("Open the Explorer", "explorer.html")) if have(n)]

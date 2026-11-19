@@ -1,0 +1,99 @@
+# Published addresses of ARTEX and CyberStrikeAI activity, bundled with PentAIWatch.
+# Built by scripts/known_bad/build.py from SecureDataSolutions/artex-hunting-pack iocs.csv
+# (MIT licence, Copyright (c) 2026 Secure Data Solutions, Inc.; sha256 d7700f8fd5d6507616a92e4bdf8b27bccb60f80cafb14d8ad4ca114d6cd52ee5)
+# and the Unit 42 note of 2026-10-30. Each row names who published it and how sure they are.
+address,name,confidence,reference
+38.244.50.120/32,KR finance (unattributed): artex server (CrowdStrike),high,https://www.crowdstrike.com/en-us/blog/unknown-threat-actor-uses-artex-to-target-south-korean-finance/
+101.53.80.20/32,KR finance (unattributed): proxy (CrowdStrike),medium,https://www.crowdstrike.com/en-us/blog/unknown-threat-actor-uses-artex-to-target-south-korean-finance/
+205.214.59.31/32,KR finance (unattributed): proxy (CrowdStrike),medium,https://www.crowdstrike.com/en-us/blog/unknown-threat-actor-uses-artex-to-target-south-korean-finance/
+124.155.252.63/32,KR finance (unattributed): proxy (CrowdStrike),medium,https://www.crowdstrike.com/en-us/blog/unknown-threat-actor-uses-artex-to-target-south-korean-finance/
+154.201.79.246/32,KR finance (unattributed): proxy (CrowdStrike),medium,https://www.crowdstrike.com/en-us/blog/unknown-threat-actor-uses-artex-to-target-south-korean-finance/
+23.248.249.90/32,KR finance (unattributed): proxy (CrowdStrike),medium,https://www.crowdstrike.com/en-us/blog/unknown-threat-actor-uses-artex-to-target-south-korean-finance/
+23.158.220.98/32,KR finance (unattributed): proxy (CrowdStrike),medium,https://www.crowdstrike.com/en-us/blog/unknown-threat-actor-uses-artex-to-target-south-korean-finance/
+103.248.148.84/32,KR finance (unattributed): proxy (CrowdStrike),medium,https://www.crowdstrike.com/en-us/blog/unknown-threat-actor-uses-artex-to-target-south-korean-finance/
+203.160.133.172/32,KR finance (unattributed): proxy (CrowdStrike),medium,https://www.crowdstrike.com/en-us/blog/unknown-threat-actor-uses-artex-to-target-south-korean-finance/
+209.209.85.38/32,KR finance (unattributed): proxy (CrowdStrike),medium,https://www.crowdstrike.com/en-us/blog/unknown-threat-actor-uses-artex-to-target-south-korean-finance/
+144.172.64.99/32,Storm-0940: attack source (Microsoft),high,https://www.microsoft.com/en-us/security/blog/2026/10/21/storm-0940-uses-artex-agentic-ai-connectwise-supply-chain-compromise/
+144.172.64.60/32,Storm-0940: attack source (Microsoft),high,https://www.microsoft.com/en-us/security/blog/2026/10/21/storm-0940-uses-artex-agentic-ai-connectwise-supply-chain-compromise/
+144.172.64.128/32,Storm-0940: attack source (Microsoft),high,https://www.microsoft.com/en-us/security/blog/2026/10/21/storm-0940-uses-artex-agentic-ai-connectwise-supply-chain-compromise/
+187.15.88.186/32,Storm-0940: vpn exit (Microsoft),low,https://www.microsoft.com/en-us/security/blog/2026/10/21/storm-0940-uses-artex-agentic-ai-connectwise-supply-chain-compromise/
+187.15.89.186/32,Storm-0940: vpn exit (Microsoft),low,https://www.microsoft.com/en-us/security/blog/2026/10/21/storm-0940-uses-artex-agentic-ai-connectwise-supply-chain-compromise/
+187.15.90.217/32,Storm-0940: vpn exit (Microsoft),low,https://www.microsoft.com/en-us/security/blog/2026/10/21/storm-0940-uses-artex-agentic-ai-connectwise-supply-chain-compromise/
+199.19.95.66/32,Storm-3358 (finance): c2 (Microsoft),high,https://www.microsoft.com/en-us/security/blog/2026/11/06/artex-abuse-expands-as-cybercriminals-target-financial-sector/
+199.19.95.67/32,Storm-3358 (finance): c2 (Microsoft),high,https://www.microsoft.com/en-us/security/blog/2026/11/06/artex-abuse-expands-as-cybercriminals-target-financial-sector/
+199.19.95.68/32,Storm-3358 (finance): c2 (Microsoft),high,https://www.microsoft.com/en-us/security/blog/2026/11/06/artex-abuse-expands-as-cybercriminals-target-financial-sector/
+91.92.240.238/32,Storm-3358 (finance): artex server (Microsoft),high,https://www.microsoft.com/en-us/security/blog/2026/11/06/artex-abuse-expands-as-cybercriminals-target-financial-sector/
+85.11.168.45/32,Storm-3358 (finance): artex server (Microsoft),high,https://www.microsoft.com/en-us/security/blog/2026/11/06/artex-abuse-expands-as-cybercriminals-target-financial-sector/
+85.11.167.52/32,Storm-3358 (finance): c2 (Microsoft),high,https://www.microsoft.com/en-us/security/blog/2026/11/06/artex-abuse-expands-as-cybercriminals-target-financial-sector/
+178.16.54.129/32,Storm-3358 (finance): artex server (Microsoft),high,https://www.microsoft.com/en-us/security/blog/2026/11/06/artex-abuse-expands-as-cybercriminals-target-financial-sector/
+178.15.54.129/32,Storm-3358 (finance): artex server (Microsoft),medium,https://www.microsoft.com/en-us/security/blog/2026/11/06/artex-abuse-expands-as-cybercriminals-target-financial-sector/
+31.77.229.35/32,Storm-3358 (finance): artex server (Microsoft),high,https://www.microsoft.com/en-us/security/blog/2026/11/06/artex-abuse-expands-as-cybercriminals-target-financial-sector/
+45.153.126.223/32,VAPOR PANDA: c2 (CrowdStrike),high,https://www.crowdstrike.com/en-us/blog/vapor-panda-uses-artex-to-scale-global-campaign/
+89.46.234.50/32,VAPOR PANDA: c2 (CrowdStrike),high,https://www.crowdstrike.com/en-us/blog/vapor-panda-uses-artex-to-scale-global-campaign/
+192.121.47.20/32,VAPOR PANDA: c2 (CrowdStrike),high,https://www.crowdstrike.com/en-us/blog/vapor-panda-uses-artex-to-scale-global-campaign/
+212.11.64.250/32,FortiGate campaign: cyberstrikeai server (Team Cymru (via secondary reporting)),medium,https://www.bleepingcomputer.com/news/security/cyberstrikeai-tool-adopted-by-hackers-for-ai-powered-attacks/
+103.122.245.194/32,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+103.122.245.198/32,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+103.122.245.199/32,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+103.122.245.204/32,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+103.122.245.214/32,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+103.122.245.215/32,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+103.122.245.216/32,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+103.122.245.217/32,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+103.122.245.218/32,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+103.122.245.219/32,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+192.236.172.197/32,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+198.44.123.66/32,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+204.44.66.81/32,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+104.168.112.237/32,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+198.200.59.85/32,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+198.200.59.86/32,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+198.200.59.87/32,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+198.200.59.88/32,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+198.200.59.89/32,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+1.14.104.208/32,Censys exposure scan: artex server (Censys),low,https://censys.com/blog/artex-agentic-asbestos/
+1.14.193.53/32,Censys exposure scan: artex server (Censys),low,https://censys.com/blog/artex-agentic-asbestos/
+101.42.4.91/32,Censys exposure scan: artex server (Censys),low,https://censys.com/blog/artex-agentic-asbestos/
+192.210.193.156/32,Censys exposure scan: artex server (Censys),low,https://censys.com/blog/artex-agentic-asbestos/
+45.87.53.3/32,Censys exposure scan: artex server (Censys),low,https://censys.com/blog/artex-agentic-asbestos/
+45.87.53.4/32,Censys exposure scan: artex server (Censys),low,https://censys.com/blog/artex-agentic-asbestos/
+45.87.53.6/32,Censys exposure scan: artex server (Censys),low,https://censys.com/blog/artex-agentic-asbestos/
+45.87.53.10/32,Censys exposure scan: artex server (Censys),low,https://censys.com/blog/artex-agentic-asbestos/
+45.87.53.14/32,Censys exposure scan: artex server (Censys),low,https://censys.com/blog/artex-agentic-asbestos/
+104.250.149.210/32,Censys exposure scan: artex server (Censys),low,https://censys.com/blog/artex-agentic-asbestos/
+104.250.149.211/32,Censys exposure scan: artex server (Censys),low,https://censys.com/blog/artex-agentic-asbestos/
+104.250.149.212/32,Censys exposure scan: artex server (Censys),low,https://censys.com/blog/artex-agentic-asbestos/
+104.250.149.213/32,Censys exposure scan: artex server (Censys),low,https://censys.com/blog/artex-agentic-asbestos/
+110.42.215.163/32,Censys exposure scan: artex server (Censys),low,https://censys.com/blog/artex-agentic-asbestos/
+111.68.4.13/32,Censys exposure scan: artex server (Censys),low,https://censys.com/blog/artex-agentic-asbestos/
+108.165.147.226/32,Censys exposure scan: artex server (Censys),low,https://censys.com/blog/artex-agentic-asbestos/
+206.187.215.173/32,Censys exposure scan: artex server (Censys),low,https://censys.com/blog/artex-agentic-asbestos/
+181.41.194.136/32,Censys exposure scan: artex server (Censys),low,https://censys.com/blog/artex-agentic-asbestos/
+203.195.243.103/32,Censys exposure scan: artex server (Censys),low,https://censys.com/blog/artex-agentic-asbestos/
+154.12.86.207/32,Censys exposure scan: artex server (Censys),low,https://censys.com/blog/artex-agentic-asbestos/
+38.11.173.1/32,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+38.11.173.2/31,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+38.11.173.4/30,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+38.11.173.8/29,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+38.11.173.16/28,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+38.11.173.32/27,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+38.11.173.64/27,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+38.11.173.96/28,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+38.11.173.112/29,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+38.11.173.120/30,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+38.11.173.124/31,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+38.11.221.1/32,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+38.11.221.2/31,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+38.11.221.4/30,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+38.11.221.8/29,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+38.11.221.16/28,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+38.11.221.32/27,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+38.11.221.64/27,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+38.11.221.96/28,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+38.11.221.112/29,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+38.11.221.120/30,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+38.11.221.124/31,ARTEX cybercrime (Check Point): artex server (Check Point Research),medium,https://research.checkpoint.com/2026/hacking-on-autopilot-inside-artex-cybercrime-campaigns/
+31.40.205.155/32,"ARTEX: primary origin of sign-up, API retrieval and IdP probing; Sub2API on 8080 (Unit 42)",medium,https://github.com/PaloAltoNetworks/Unit42-timely-threat-intel/blob/main/2026-10-30-activity-using-ARTEX-agentic-AI.txt
+173.254.220.78/32,ARTEX: reconnaissance and account-recovery probing; Sub2API gateway (Unit 42),medium,https://github.com/PaloAltoNetworks/Unit42-timely-threat-intel/blob/main/2026-10-30-activity-using-ARTEX-agentic-AI.txt
+103.100.158.103/32,"ARTEX: scanning and authorization-flow probing (Unit 42, monitor only)",low,https://github.com/PaloAltoNetworks/Unit42-timely-threat-intel/blob/main/2026-10-30-activity-using-ARTEX-agentic-AI.txt
+152.233.51.12/32,"ARTEX: probing and unauthenticated API writes (Unit 42, monitor only)",low,https://github.com/PaloAltoNetworks/Unit42-timely-threat-intel/blob/main/2026-10-30-activity-using-ARTEX-agentic-AI.txt

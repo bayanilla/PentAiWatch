@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import sys
 
-from . import __version__, config, details, engine, explore, netmap, resources, scanners
+from . import __version__, config, details, engine, explore, knownbad, netmap, resources, scanners
 from .config import Config
 from .detect import detect
 from .errors import UserError
@@ -51,7 +51,7 @@ def input_files(paths: list[str], outdir: str) -> list[str]:
 
 
 def run(paths: list[str], outdir: str, cfg: Config | None = None, *, config_path: str | None = None,
-        network_map: str | None = None, known_scanners: str | None = None,
+        network_map: str | None = None, known_scanners: str | None = None, known_bad: str | None = None,
         workdir: str | None = None, internal_nets: list[str] | None = None,
         report: dict | None = None) -> tuple[dict, dict[str, str]]:
     """Analyze ``paths`` (files or folders) and write the report and the Explorer into ``outdir``.
@@ -90,6 +90,10 @@ def run(paths: list[str], outdir: str, cfg: Config | None = None, *, config_path
     found_lists = [f for f in files if scanners.is_list_file(f)]
     lists = found_lists + ([known_scanners] if known_scanners else [])
     cfg.known_scanners = [e for path in lists for e in scanners.read(path)]
+    found_bad = [f for f in files if knownbad.is_list_file(f)]
+    bad_lists = found_bad + ([known_bad] if known_bad else [])
+    cfg.known_bad = ((knownbad.bundled() if cfg.known_bad_bundled else [])
+                     + [e for path in bad_lists for e in knownbad.read(path)])
     # The files that decide what counts as internal and what is never flagged. One left in a log
     # folder is used without being asked for, so each is named in the results and the report.
     settings_files = ([{"kind": "settings", "file": chosen, "found_in_input": not config_path}] if chosen else [])
@@ -98,8 +102,10 @@ def run(paths: list[str], outdir: str, cfg: Config | None = None, *, config_path
     settings_files += [{"kind": "known_scanners", "file": f, "found_in_input": True} for f in found_lists]
     settings_files += ([{"kind": "known_scanners", "file": known_scanners, "found_in_input": False}]
                        if known_scanners else [])
-    logs = [f for f in files if not (config.is_config_file(f) or netmap.is_map_file(f)
-                                     or scanners.is_list_file(f) or os.path.basename(f).lower() in NOTES)]
+    settings_files += [{"kind": "known_bad", "file": f, "found_in_input": True} for f in found_bad]
+    settings_files += [{"kind": "known_bad", "file": known_bad, "found_in_input": False}] if known_bad else []
+    logs = [f for f in files if not (config.is_config_file(f) or netmap.is_map_file(f) or scanners.is_list_file(f)
+                                     or knownbad.is_list_file(f) or os.path.basename(f).lower() in NOTES)]
     if not logs:
         raise UserError("No log files were given. Point PentAIWatch at Zeek conn.log files, Palo Alto "
                         "traffic logs, or a folder of them.")
@@ -140,6 +146,8 @@ def run(paths: list[str], outdir: str, cfg: Config | None = None, *, config_path
                 "typed_settings": typed,
                 "networks": cfg.networks,
                 "known_scanners": cfg.known_scanners,
+                "known_bad_lists": {"bundled": sum(1 for e in cfg.known_bad if e["list_name"] == "bundled list"),
+                                    "yours": sum(1 for e in cfg.known_bad if e["list_name"] != "bundled list")},
                 "warnings": warnings + detection.warnings,
                 "detection": detection.to_dict(),
                 "limitations": LIMITATIONS,

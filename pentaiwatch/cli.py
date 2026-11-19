@@ -26,6 +26,9 @@ def main(argv=None) -> int:
                    help="your address ranges with names: cidr,name,type (default: network_map.csv in an input folder)")
     a.add_argument("--known-scanners", metavar="CSV",
                    help="sources never to flag: address,name (default: known_scanners.csv in an input folder)")
+    a.add_argument("--known-bad", metavar="CSV",
+                   help="attacker addresses to flag on sight: address,name,confidence,reference "
+                        "(default: known_bad.csv in an input folder, plus the bundled published list)")
     a.add_argument("--name", default="", help="report name, shown at the top of the report and in the Explorer")
     a.add_argument("--description", default="",
                    help="a few lines about the run (scope, case number), shown under the report name")
@@ -50,7 +53,7 @@ def main(argv=None) -> int:
         return 0
     try:
         res, paths = run(args.files, args.out, config_path=args.config, network_map=args.network_map,
-                         known_scanners=args.known_scanners, workdir=args.workdir,
+                         known_scanners=args.known_scanners, known_bad=args.known_bad, workdir=args.workdir,
                          report={"name": args.name, "description": args.description})
     except UserError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -58,11 +61,17 @@ def main(argv=None) -> int:
     for warning in res["warnings"]:
         print(f"warning: {warning}", file=sys.stderr)
     found = res["detection"]["findings"]
-    print(f"{res['sessions']:,} sessions read; {len(found)} source{'' if len(found) == 1 else 's'} flagged.")
+    known = res["detection"].get("known_sources") or []
+    total = len(found) + len(known)
+    print(f"{res['sessions']:,} sessions read; {total} source{'' if total == 1 else 's'} flagged.")
     for f in found:
         tier = "tier 0" if f["level"] == 0 else f"level {f['level']}"
         hosts = len(f["hosts_hit"])
-        print(f"  {f['source']}  {tier}: {f['label']}  ({hosts} host{'' if hosts == 1 else 's'} hit)")
+        also = "  [published attacker address]" if f.get("known") else ""
+        print(f"  {f['source']}  {tier}: {f['label']}  ({hosts} host{'' if hosts == 1 else 's'} hit){also}")
+    for k in known:
+        print(f"  {k['source']}  published attacker address: {k['name'] or 'listed'}  "
+              f"({k['hosts']} host{'' if k['hosts'] == 1 else 's'} reached)")
     print(f"Report:   {paths['report.html']}")
     print(f"Explorer: {paths['explorer.html']}")
     return 0

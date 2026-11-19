@@ -156,9 +156,29 @@ writes the tests' sample logs into `demo/input/`, analyzes them and leaves
 |---|---|
 | `network_map.csv` | Your address ranges with names (`cidr,name,type`). Every range in it counts as internal, and the names appear in the report. Without it, RFC 1918 ranges are internal. |
 | `known_scanners.csv` | Sources that are never flagged (`address,name`): your own scanners, attack-surface services, a red team you hired. |
+| `known_bad.csv` | Attacker addresses to flag on sight (`address,name,confidence,reference`; an address, a CIDR range or `first-last`). Added to the bundled list described under [Published attacker addresses](#published-attacker-addresses). |
 | `pentaiwatch.json` | Settings you want to change. Every threshold is a setting. |
 
-Each can also be given on the command line: `--network-map`, `--known-scanners`, `--config`.
+Each can also be given on the command line: `--network-map`, `--known-scanners`, `--known-bad`, `--config`.
+
+### Published attacker addresses
+
+PentAIWatch comes with a list of the addresses vendors published for ARTEX and CyberStrikeAI
+activity (`pentaiwatch/data/known_bad.csv`): CrowdStrike, Microsoft, Check Point, Censys and Team
+Cymru as collected by the MIT-licensed
+[artex-hunting-pack](https://github.com/SecureDataSolutions/artex-hunting-pack), plus the four
+addresses of Unit 42's note of 30 October 2026. Each row keeps who published it, how sure they
+were and where. `scripts/known_bad/build.py` rebuilds it from a newer copy of the pack; PentAIWatch
+never downloads it.
+
+A source on that list, or on your own `known_bad.csv`, that reached an internal host is flagged
+whatever its traffic looked like. When its traffic also fired the three signals, its finding says
+it is a published address; otherwise it is listed under *Published attacker addresses* in the
+report, with its sessions, the services it reached and the list's entry. The allowlist and
+`known_scanners.csv` still win, with a warning. Some of these addresses are attacker servers and
+VPN exits rather than scanners, and the low-confidence Censys rows are hosts seen running the tools,
+not seen attacking: read the confidence before acting on a match. Set `known_bad_bundled` to
+`false` to use only your own list.
 
 A file with one of these names anywhere under the input folder is used without being asked for,
 and each of them changes what gets flagged. So the report says which ones it read (the first line
@@ -175,6 +195,7 @@ first is used, a warning names the others, and `--config` settles it.
 {
   "internal_nets": ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
   "allowlist": [],
+  "known_bad_bundled": true,
   "lookback_hours": 72,
   "window_hours": 2,
   "dedup_skew_seconds": 2.0,
@@ -299,7 +320,8 @@ analyst's machine or in a closed network. What it does about that:
   SHA-256), and neither can load or send anything. The browser check tries all of that from
   inside both pages and fails if any of it gets through.
 - **Files in the input folder are trusted.** A `pentaiwatch.json`, `network_map.csv` or
-  `known_scanners.csv` left in a log folder decides what is internal and what is never flagged.
+  `known_scanners.csv` left in a log folder decides what is internal and what is never flagged, and a
+  `known_bad.csv` what is flagged on sight.
   The report names each one it read and counts what the never-flag lists left out (see
   [Optional files in the input folder](#optional-files-in-the-input-folder)). Read that line
   when the logs come from a folder other people can write to.

@@ -58,7 +58,20 @@ def _service(s: dict) -> str:
     return f"{s['host']} {port}"
 
 
-FILE_KIND_TEXT = {"settings": "settings", "network_map": "network map", "known_scanners": "known scanners"}
+FILE_KIND_TEXT = {"settings": "settings", "network_map": "network map", "known_scanners": "known scanners",
+                  "known_bad": "known attacker addresses"}
+
+
+def _cell(text: str) -> str:
+    """Text from a list or a log, safe inside a table cell of this report."""
+    return " ".join(str(text).replace("|", "/").split())
+
+
+def _published(k: dict) -> str:
+    """What a list of published attacker addresses says about a source."""
+    conf = f", {k['confidence']} confidence" if k.get("confidence") else ""
+    ref = f"; {_cell(k['reference'])}" if k.get("reference") else ""
+    return f"{_cell(k['name']) or 'listed'} ({_cell(k['list_name'])}{conf}){ref}"
 
 
 def _read_from(files: list[dict]) -> str:
@@ -69,6 +82,33 @@ def _read_from(files: list[dict]) -> str:
     named = [f"{FILE_KIND_TEXT[f['kind']]} {f['file']}"
              + (" (found among the input files)" if f["found_in_input"] else "") for f in files]
     return "- Read from: " + "; ".join(named) + "."
+
+
+def _known_lines(known: list[dict]) -> list[str]:
+    """The sources flagged only because a list of published attacker addresses names them."""
+    if not known:
+        return []
+    lines = ["### Published attacker addresses", "",
+             f"{_n(len(known), 'outside source')} reached your hosts from an address published for ARTEX or "
+             "CyberStrikeAI activity (or listed in your known_bad.csv). Their traffic did not show the sweep, "
+             "narrowing and pace above, so this rests on the list alone: check who published it and when.", "",
+             "| Source | Published as | Sessions | Hosts | Services it reached | Seen |", "|---|---|---|---|---|---|"]
+    for k in known:
+        more = f" and {k['services_total'] - len(k['services']):,} more" if k["services_total"] > len(k["services"]) else ""
+        lines.append(f"| {k['source']} | {_published(k)} | {k['sessions']:,} ({k['answered']:,} answered) | "
+                     f"{k['hosts']:,} | {', '.join(k['services'])}{more} | {_when(k['first_seen'])} to "
+                     f"{_when(k['last_seen'])} |")
+    return lines + [""]
+
+
+def _known_bad_line(res: dict) -> str:
+    lists = res.get("known_bad_lists") or {}
+    parts = []
+    if lists.get("bundled"):
+        parts.append(f"the bundled list of published ARTEX and CyberStrikeAI addresses ({lists['bundled']:,} ranges)")
+    if lists.get("yours"):
+        parts.append(f"your known_bad.csv ({lists['yours']:,} ranges)")
+    return "- Flagged on sight: " + (" and ".join(parts) if parts else "no list of attacker addresses") + "."
 
 
 def _band(st: dict) -> str:
@@ -114,6 +154,8 @@ def _finding_lines(f: dict, st: dict, map_file: str = "", timeline: bool = False
              f"{_when(f['last_seen'])}, {f['sessions']:,} sessions |",
              f"| Probe start to first vulnerability hit | {f['threat_evidence']} |",
              f"| Threat hits | {f['threat_evidence']} |"]
+    if f.get("known"):
+        lines.append(f"| Published attacker address | {_published(f['known'])} |")
     if f.get("notes"):
         lines.append(f"| Notes | {' '.join(f['notes'])} |")
     if map_file:
@@ -186,6 +228,7 @@ def markdown(res: dict) -> str:
     if swept_only > 0:
         lines += [f"{_n(swept_only, 'other source')} swept many hosts or ports and did not narrow. That "
                   "looks like plain scanning and is not flagged.", ""]
+    lines += _known_lines(det.get("known_sources") or [])
     if map_file:
         replay = (" Its Timeline replays a source's sessions in the order they started, with its bursts and "
                   "pauses." if ex.get("timelines") else "")
@@ -197,6 +240,9 @@ def markdown(res: dict) -> str:
               "- **Tier 0. Sweep and narrow seen, timing unavailable.** Probing and narrowing fired. The "
               "timing could not be checked, because the sessions have no start time. A source whose timing "
               "was checked and did not fit is not flagged at all.",
+              "- **Published attacker address.** A source on a list of addresses that vendors published for "
+              "ARTEX or CyberStrikeAI activity, or on your own known_bad.csv, is flagged whatever its traffic "
+              "looked like. The list says who published it and how sure they were.",
               "- **Levels 2 and 3** add exploit evidence from Palo Alto threat logs, which are not scored yet.",
               "- **Threat logs not provided** means no exploit evidence could be attached. It does not "
               "mean there were no exploit attempts. Threat logs that were read are not scored yet either.", "",
@@ -235,6 +281,7 @@ def markdown(res: dict) -> str:
               f"each followed by a {_band(st)} pause, and {tm['min_pause_share']:.0%}+ of all the window's pauses "
               f"in that band. A source's pace is only ruled out when {tm['min_timed_share']:.0%}+ of its sessions "
               "have a start time.",
+              _known_bad_line(res),
               f"- Never flagged: {', '.join(st['allowlist'] + [k['cidr'] for k in res['known_scanners']]) or 'nothing listed'}."
               + (f" That left out {_n(det['never_flagged_sources'], 'outside source')} with "
                  f"{_n(det['never_flagged_sessions'], 'inbound session')}." if det["never_flagged_sources"] else "")]

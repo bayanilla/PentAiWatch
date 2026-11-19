@@ -19,6 +19,8 @@ How it works, in order:
                             into bursts, and whether the bursts and pauses keep an agent's pace.
 7. ``_sweeps``              per source, the one window it is judged by, and whether it is flagged.
 8. ``_findings``            one finding per flagged source.
+9. ``_known_sources``       sources on a list of published attacker addresses (knownbad.py) that
+                            were not flagged by their traffic: flagged and named all the same.
 
 A source is flagged when probing and narrowing fired and timing either fired too (level 1) or
 could not be judged because its sessions have no start time (tier 0). A source that swept and
@@ -49,6 +51,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import engine
 from .config import Config
+from .knownbad import KnownBad
 from .netmap import NetMap
 from .scanners import Known
 from .schema import START_END_MINUS_ELAPSED, START_FIELD, START_ZEEK_TS
@@ -111,11 +114,31 @@ class Finding:
     timing: Pace
     threat_evidence: str
     notes: list[str] = field(default_factory=list)    # what a reader should know about this finding's data
+    known: dict | None = None    # its entry in a list of published attacker addresses, if any
+
+
+@dataclass
+class KnownSource:
+    """A source on a list of published attacker addresses that its traffic alone did not flag."""
+    source: str
+    name: str                    # what the list says about it
+    confidence: str              # high / medium / low, as the publisher put it ('' when not given)
+    reference: str               # where it was published
+    list_name: str               # which list: "bundled list" or the file name
+    log_sources: list[str]
+    sessions: int                # its inbound sessions in the lookback
+    answered: int                # of those, the ones a host answered
+    hosts: int
+    services: list[str]          # "host:port/proto", most sessions first (capped)
+    services_total: int
+    first_seen: str
+    last_seen: str
 
 
 @dataclass
 class Detection:
     findings: list[Finding] = field(default_factory=list)
+    known_sources: list[KnownSource] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     lookback_start: str | None = None
     lookback_end: str | None = None
@@ -163,7 +186,7 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
                             "lookback_hours to include them.")
     nm = NetMap(cfg.networks)
     try:
-        _classify_addresses(con, cfg)
+        bad = _classify_addresses(con, cfg)
         _common_sessions(con, cfg, start)
         out.inbound_sessions, out.outside_sources = con.execute(
             "SELECT count(*), count(DISTINCT src_ip) FROM pw_sessions").fetchone()
@@ -184,6 +207,15 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
         _timing(con, cfg)
         out.narrowing_sources = _sweeps(con)
         out.findings = _findings(con, cfg, nm)
+        for f in out.findings:
+            f.known = bad.get(f.source)
+        out.known_sources = _known_sources(con, bad, {f.source for f in out.findings})
+        listed_but_allowed = sorted(ip for ip in bad if ip in _allowed(con))
+        if listed_but_allowed:
+            out.warnings.append(f"{len(listed_but_allowed)} source(s) on a list of published attacker addresses are "
+                                "also on your allowlist or in known_scanners.csv, so they were not flagged: "
+                                + ", ".join(listed_but_allowed[:10]) + (" and more" if len(listed_but_allowed) > 10 else "")
+                                + ".")
         if while_scored is not None:
             while_scored(con, out)
     finally:
@@ -193,9 +225,10 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
 
 
 # -- 1. addresses ---------------------------------------------------------------------------
-def _classify_addresses(con, cfg: Config) -> None:
+def _classify_addresses(con, cfg: Config) -> dict[str, dict]:
     """Table pw_ip(ip, internal, allowed) for every address in the flows. Internal: inside
-    ``internal_nets`` or a network_map.csv range. Allowed: in the allowlist or known_scanners.csv."""
+    ``internal_nets`` or a network_map.csv range. Allowed: in the allowlist or known_scanners.csv.
+    Returns the outside addresses on a list of published attacker addresses, with their entry."""
     internal = [ipaddress.ip_network(c, strict=False)
                 for c in list(cfg.internal_nets) + [e["cidr"] for e in cfg.networks]]
     allowed = Known([{"cidr": str(ipaddress.ip_network(c, strict=False)), "name": ""} for c in cfg.allowlist]
@@ -209,6 +242,8 @@ def _classify_addresses(con, cfg: Config) -> None:
         return any(addr.version == n.version and addr in n for n in internal)
 
     ips = [r[0] for r in con.execute("SELECT src_ip FROM flows UNION SELECT dst_ip FROM flows").fetchall()]
+    lists = KnownBad(cfg.known_bad)
+    bad = {ip: hit for ip in ips if not is_internal(ip) and (hit := lists.match(ip)) is not None}
     fd, path = tempfile.mkstemp(prefix="pw-ip-", suffix=".csv")
     try:
         with os.fdopen(fd, "w", newline="", encoding="utf-8") as fh:
@@ -219,6 +254,11 @@ def _classify_addresses(con, cfg: Config) -> None:
                         "columns = {'ip': 'VARCHAR', 'internal': 'BOOLEAN', 'allowed': 'BOOLEAN'})", [path])
     finally:
         os.remove(path)
+    return bad
+
+
+def _allowed(con) -> set[str]:
+    return {r[0] for r in con.execute("SELECT ip FROM pw_ip WHERE allowed").fetchall()}
 
 
 # -- 2. the common session shape ------------------------------------------------------------
@@ -567,6 +607,34 @@ def _findings(con, cfg: Config, nm: NetMap) -> list[Finding]:
             timing=_pace(con, cfg, src, status, int(n), int(timed)),
             threat_evidence=threat_text, notes=notes))
     return sorted(out, key=lambda f: (-f.level, -f.sessions, f.source))
+
+
+# -- 9. published attacker addresses ---------------------------------------------------------
+MAX_KNOWN_SERVICES = 10
+
+
+def _known_sources(con, bad: dict[str, dict], flagged: set[str]) -> list[KnownSource]:
+    """Sources with inbound sessions that are on a list of published attacker addresses and were
+    not already flagged by their traffic (those findings carry the entry themselves)."""
+    out = []
+    for src in sorted(set(bad) - flagged):
+        sessions, answered, hosts, first, last = con.execute("""
+            SELECT count(*), count(*) FILTER (outcome = 'answered'), count(DISTINCT dst_ip), min(start_ts),
+                   max(start_ts) FROM pw_sessions WHERE src_ip = ?""", [src]).fetchone()
+        if not sessions:
+            continue
+        svc = con.execute("""
+            SELECT dst_ip, dst_port, proto, count(*) AS n FROM pw_sessions WHERE src_ip = ?
+            GROUP BY ALL ORDER BY n DESC, dst_ip, dst_port""", [src]).fetchall()
+        entry = bad[src]
+        out.append(KnownSource(
+            source=src, name=entry["name"], confidence=entry["confidence"], reference=entry["reference"],
+            list_name=entry["list_name"], log_sources=log_sources(con, src), sessions=int(sessions), answered=int(answered),
+            hosts=int(hosts), services=[f"{h}:{p}/{pr}" if p is not None else f"{h}/{pr}" for h, p, pr, _ in
+                                        svc[:MAX_KNOWN_SERVICES]],
+            services_total=len(svc), first_seen=_iso(first), last_seen=_iso(last)))
+    rank = {c: i for i, c in enumerate(("high", "medium", "low", ""))}
+    return sorted(out, key=lambda k: (rank.get(k.confidence, 3), -k.sessions, k.source))
 
 
 def _has_table(con, name: str) -> bool:

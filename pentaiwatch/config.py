@@ -153,6 +153,9 @@ class Config:
     allowlist: list[str] = field(default_factory=list)
     lookback_hours: float = 72           # how far back from the last session in the run to look (24-72)
     window_hours: float = 2              # length of the scoring window
+    # Use the list of published ARTEX and CyberStrikeAI addresses that comes with PentAIWatch
+    # (data/known_bad.csv). Your own known_bad.csv is used either way.
+    known_bad_bundled: bool = True
     # Clock difference tolerated when matching one session seen by Zeek and by the firewall.
     dedup_skew_seconds: float = 2.0
     probing: Probing = field(default_factory=Probing)
@@ -162,6 +165,7 @@ class Config:
     # Filled by the pipeline from network_map.csv and known_scanners.csv (not settings).
     networks: list[dict] = field(default_factory=list, metadata={"runtime": True})
     known_scanners: list[dict] = field(default_factory=list, metadata={"runtime": True})
+    known_bad: list[dict] = field(default_factory=list, metadata={"runtime": True})
 
     def settings(self) -> dict:
         """The settings as plain data (what a pentaiwatch.json may hold), for results.json."""

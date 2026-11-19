@@ -56,8 +56,12 @@ def summary(res: dict) -> dict:
     timelines = set((res.get("explorer") or {}).get("timelines") or [])
     return {"sessions": res["sessions"], "warnings": len(res["warnings"]),
             "flagged": [{"source": f["source"], "level": f["level"], "label": f["label"],
-                         "hosts": len(f["hosts_hit"]), "timeline": f["source"] in timelines}
-                        for f in res["detection"]["findings"]]}
+                         "hosts": len(f["hosts_hit"]), "timeline": f["source"] in timelines,
+                         "known": bool(f.get("known"))}
+                        for f in res["detection"]["findings"]]
+                       + [{"source": k["source"], "level": None, "label": k["name"] or "listed",
+                           "hosts": k["hosts"], "timeline": False, "known": True}
+                          for k in res["detection"].get("known_sources") or []]}
 
 
 class Jobs:
