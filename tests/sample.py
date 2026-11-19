@@ -33,10 +33,12 @@ NARROWED = [("10.10.1.10", 443), ("10.10.1.11", 8443), ("10.10.1.12", 11434)]
 
 def agent(rng: random.Random, hours: float = 4.0, pause_at: float | None = None,
           pause_hours: float = 1.0, refused: float = 0.04, think: tuple[float, float] = (20, 35),
-          src: str = AGENT) -> list[dict]:
+          src: str = AGENT, paths: int = 1, interleave: bool = True) -> list[dict]:
     """The agentic source. ``pause_at`` (hours into the narrowing) inserts a ``pause_hours`` gap.
     ``refused`` is the share of closed ports that refuse the connection instead of staying silent.
-    ``think`` is how long it waits between bursts, in seconds; ``src`` is its address."""
+    ``think`` is how long it waits between bursts, in seconds; ``src`` is its address. ``paths``:
+    how many of the narrowed services each burst works, taking turns between them (``interleave``,
+    several attack paths at once) or one after the other."""
     out, t = [], T0 + 600
     targets = [(h, p) for h in HOSTS[:30] for p in AGENT_PORTS]
     rng.shuffle(targets)
@@ -51,8 +53,10 @@ def agent(rng: random.Random, hours: float = 4.0, pause_at: float | None = None,
             t += pause_hours * 3600
             end += pause_hours * 3600
             paused = True
-        host, port = rng.choice(NARROWED)
-        for _ in range(rng.randint(1, 14)):                     # a burst
+        chosen = [rng.choice(NARROWED)] if paths == 1 else rng.sample(NARROWED, paths)
+        n = rng.randint(1, 14)
+        for i in range(n):                                      # a burst
+            host, port = chosen[i % paths] if interleave else chosen[i * paths // n]
             out.append(kit.session(t, src, host, port, rng.choice(["SF", "SF", "SF", "RSTO"])))
             t += rng.uniform(0.7, 1.3)
         t += rng.uniform(*think)                                # think time

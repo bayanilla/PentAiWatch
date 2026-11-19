@@ -192,6 +192,17 @@ of two neighbouring whole seconds (a second or more apart) counts as steady too;
 3 do not. Health checks and monitoring probes can be just as steady: list the
 ones you expect in `known_scanners.csv`.
 
+### Several attack paths at once
+
+ARTEX ran several attack paths side by side from one address. Once a flagged source has narrowed,
+PentAIWatch cuts its answered sessions into bursts (the same burst gap the timing check uses) and
+looks for bursts that work `parallel.min_services` (2) or more services and go back to one they
+left, so they take turns between them. A tool that finishes one service before starting the next
+does not count. With `parallel.min_bursts` (5) or more such bursts, the finding says "Higher
+confidence" and lists the services. This never flags a source on its own, and it needs session
+start times, so a Tier 0 finding never has it. Palo Alto times are whole seconds, so sessions in the
+same second keep the order they have in the export.
+
 ### Named targets
 
 The ARTEX and CyberStrikeAI reporting says what the agents went for: FortiGate and other firewall
@@ -252,6 +263,10 @@ first is used, a warning names the others, and `--config` settles it.
     "min_sessions": 50,
     "max_gap_seconds": 10,
     "max_jitter": 0.1
+  },
+  "parallel": {
+    "min_services": 2,
+    "min_bursts": 5
   },
   "targets": {
     "Edge device admin or VPN": [541, 4443, 8443, 9443, 10443],

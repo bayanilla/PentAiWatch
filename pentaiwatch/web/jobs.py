@@ -57,7 +57,7 @@ def summary(res: dict) -> dict:
     return {"sessions": res["sessions"], "warnings": len(res["warnings"]),
             "flagged": [{"source": f["source"], "level": f["level"], "label": f["label"],
                          "hosts": len(f["hosts_hit"]), "timeline": f["source"] in timelines,
-                         "known": bool(f.get("known"))}
+                         "known": bool(f.get("known")), "parallel": bool(f.get("parallel"))}
                         for f in res["detection"]["findings"]]
                        + [{"source": k["source"], "level": None, "label": k["name"] or "listed",
                            "hosts": k["hosts"], "timeline": False, "known": True, "tag": "Published address"}
