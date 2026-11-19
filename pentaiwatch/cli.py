@@ -63,7 +63,9 @@ def main(argv=None) -> int:
     found = res["detection"]["findings"]
     known = res["detection"].get("known_sources") or []
     steady = res["detection"].get("steady_sources") or []
-    total = len({x["source"] for x in found + known + steady})
+    rotations = res["detection"].get("rotations") or []
+    total = len({x["source"] for x in found + known + steady}
+                | {ip for g in rotations for ip in [g["sweeper"]] + [j["source"] for j in g["joiners"]]})
     print(f"{res['sessions']:,} sessions read; {total} source{'' if total == 1 else 's'} flagged.")
     for f in found:
         tier = "tier 0" if f["level"] == 0 else f"level {f['level']}"
@@ -78,6 +80,9 @@ def main(argv=None) -> int:
         r = v["runs"][0]
         print(f"  {v['source']}  machine-steady repetition: {r['sessions']} sessions to {r['service']}, "
               f"one every {r['gap_seconds']:g} s")
+    for g in rotations:
+        print(f"  {g['sweeper']}  rotating sources: {', '.join(j['source'] for j in g['joiners'])} came back to "
+              "what it swept")
     print(f"Report:   {paths['report.html']}")
     print(f"Explorer: {paths['explorer.html']}")
     return 0

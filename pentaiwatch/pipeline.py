@@ -16,8 +16,9 @@ RESULTS_SCHEMA_VERSION = 1
 NOTES = ("readme.md", "readme.txt")
 LIMITATIONS = [
     "Scoring is per source address. These tools rotate through residential, datacenter and free "
-    "proxies or Tor when blocked, so one campaign can be split across several sources, each below "
-    "the thresholds or each reported separately.",
+    "proxies or Tor when blocked. New addresses that come straight back to what one sweep found are "
+    "tied to it (rotating sources), but a campaign whose sweep is itself split across addresses can "
+    "still be split across several sources, each below the thresholds.",
     "Timing reads when sessions start and nothing inside them. A tool that sends many requests over "
     "one connection it keeps open, or runs several jobs at once from one address, shows fewer pauses "
     "and can go unflagged.",
