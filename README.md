@@ -57,6 +57,12 @@ works like VulnScope MAX's upload page:
 - **Folder on this computer.** Type a path or click **Browse…** (on a Mac, the system's Choose
   Folder dialog; elsewhere, a list of folders on the page). The logs are read where they are,
   nothing is copied. This is the way for large folders.
+- **Open a saved report.** Point the same field at a finished report's output folder (the one
+  with `results.json`) and the button says **Open report**: the report and the Explorer are
+  written again with this version's code, from `results.json` and the data inside the old
+  `explorer.html`, without reading the logs. The folder itself is not changed. Its files are
+  checked before use: a file from another tool, from a newer PentAIWatch, over 256 MB, or an
+  `explorer.html` from a different run than its `results.json` is refused with the reason.
 - **Or upload files.** Choose a folder of logs, or single files, up to 20 GB in all
   (`--max-upload-gb`). An upload is streamed to disk and refused up front when the disk lacks room
   for it plus 2 GB to work in. File names and subfolders are kept, so a `pentaiwatch.json`,
@@ -377,7 +383,8 @@ The upload page follows MAX's:
 | `pentaiwatch/web/handler.py` | `vulnflow/web/handler.py` | The same host, origin, CSRF and access-token checks. Pages' scripts are named by hash in their policy, and a run's files are sent in a sandbox. |
 | `pentaiwatch/web/multipart.py` | `vulnflow/multipart.py` | Where each file goes is decided by the caller, so uploaded names and subfolders are kept. |
 | `pentaiwatch/web/runname.py`, `pentaiwatch/details.py` | `vulnflow/runname.py` | Split in two: run folder names, and the report name and description. The network field is left out: it is for MAX's Compare page. |
-| `pentaiwatch/static/web/details.js` | `vulnflow/static/upload.js` | Only the part that sends the report details with either form. |
+| `pentaiwatch/static/web/details.js`, `folder_kind.js` | `vulnflow/static/upload.js` | Sending the report details with either form, and the Open report button. The sites list is left out. |
+| `pentaiwatch/saved.py` | `vulnflow/saved.py` | The same checks, for this tool's results.json and Explorer data. No other files are served from the old folder. |
 | `pentaiwatch/web/folders.py`, `static/web/folder_picker.js` | `vulnflow/web/folders.py`, `static/folder_picker.js` | The Docker container mode is left out. |
 | `pentaiwatch/static/web/busy.js`, `web.css` | `vulnflow/static/busy.js`, `forms.css` | The overlay as it is; the styles cut to these pages, light like the report and Graphite when the system is dark. |
 | `pentaiwatch/web/upload.py`, `runs.py`, `jobs.py`, `server.py`, `app.py`, `pages.py`, `routes.py` | `vulnflow/web/` | Written for this tool. A run goes on in the background and its page asks how it is going, so a long run never depends on one request. Nessus, the Security Assistant, Compare, settings and branding pages are left out. |

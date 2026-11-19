@@ -1,6 +1,7 @@
 """The upload page and the two ways to start an analysis from it (after VulnScope MAX 6a7ac93,
 vulnflow/web/upload.py): reading a folder on this computer in place, or uploading files. Both end
-in ``_start``, which starts the run in the background (jobs.py) and opens its page.
+in ``_start``, which starts the run in the background (jobs.py) and opens its page. A folder that is
+a finished report's output folder is reopened instead (saved.py), without reading the logs again.
 """
 from __future__ import annotations
 
@@ -9,11 +10,12 @@ import ipaddress
 import os
 import re
 import shutil
+import traceback
 
-from .. import details, resources
+from .. import details, resources, saved
 from ..errors import UserError
 from ..pipeline import input_files
-from . import folders, multipart, runname, runs
+from . import folders, jobs, multipart, runname, runs
 from .pages import MARK, asset, busy_overlay, error_html, page
 
 START_HINT = "The analysis runs in the background; its page opens in a moment."
@@ -41,13 +43,14 @@ and time.</div></section>
 <div class="pathrow"><input id="path" type="text" name="path" value="{path}" placeholder="{path_example}" autocomplete="off" spellcheck="false">
 <button type="button" id="browse" class="secondary">Browse&hellip;</button></div>
 <div id="pick-msg" class="hint error" role="status" aria-live="polite"></div>
+<div id="kind-msg" class="hint" role="status" aria-live="polite"></div>
 <div id="picker" hidden><div class="pk-head"><button type="button" id="pk-up" class="secondary" title="Parent folder">&uarr; Up</button>
 <code id="pk-where"></code></div><ul id="pk-list"></ul>
 <div class="pk-foot"><span id="pk-info" class="hint"></span><button type="button" id="pk-cancel" class="secondary">Cancel</button>
 <button type="button" id="pk-use">Use this folder</button></div></div>
 <div class="hint">The files are read where they are, including subfolders; nothing is copied or uploaded. Hidden files are
 skipped. A <code>pentaiwatch.json</code>, <code>network_map.csv</code> or <code>known_scanners.csv</code> in the folder is used,
-and the report names it.</div>
+and the report names it. A finished report's output folder (with its <code>results.json</code>) is opened again instead.</div>
 <label for="nets1">Internal networks (optional)</label>
 <input id="nets1" type="text" name="internal_nets" value="{nets}" placeholder="10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16" autocomplete="off" spellcheck="false">
 <div class="hint">Anything outside these ranges counts as the internet. Leave blank to use the settings file's, or else the
@@ -89,8 +92,8 @@ def show(req, error: str = ""):
         max_upload=html.escape(resources.fmt_size(app.max_upload)),
         recent=runs.recent_html(app), busy=busy_overlay())
     config = {"csrf": app.csrf, "native": folders.NATIVE_PICKER and not app.access_token}
-    req.send_page(200, page("PentAIWatch", body, [asset("busy.js"), asset("folder_picker.js"), asset("details.js")],
-                            config))
+    req.send_page(200, page("PentAIWatch", body, [asset("busy.js"), asset("folder_picker.js"), asset("details.js"),
+                                                  asset("folder_kind.js")], config))
 
 
 def page_view(req):
@@ -227,6 +230,8 @@ def analyze_folder(req):
         return show(req, "Choose a folder first: click Browse… and pick one, or type its full path.")
     if not os.path.isdir(folder):
         return show(req, f"Folder not found: {raw}. Use the full path, for example {folders.path_example()}.")
+    if saved.is_report_folder(folder):
+        return _open_report(req, folder)
     try:
         nets = _nets(app.last_nets)
     except UserError as exc:
@@ -246,3 +251,43 @@ def analyze_folder(req):
     with open(os.path.join(in_dir, "SOURCE.txt"), "w", encoding="utf-8") as fh:
         fh.write(f"Read in place from {folder}\n" + "\n".join(files) + "\n")
     return _start(req, run_id, files, nets, f"Folder {folder}", app.last_report)
+
+
+def _open_report(req, folder: str):
+    """Write a finished report's pages again from its output folder, without reading the logs.
+    The new run gets the saved report's name; details typed on the page are not used."""
+    app, root = req.app, None
+    try:
+        res, scene = saved.load_folder(folder)
+        report = res.get("report") or {}
+        run_id = runname.new_run(app.data_dir, str(report.get("name") or ""))
+        root = app.run_root(run_id)
+        os.makedirs(os.path.join(root, "in"), mode=0o700)
+        with open(os.path.join(root, "in", "SOURCE.txt"), "w", encoding="utf-8") as fh:
+            fh.write(f"Reopened from {folder}\n")
+        saved.write(res, scene, os.path.join(root, "out"))
+        jobs.write_status(root, {"state": "done", "started": jobs.now(), "finished": jobs.now(), "seconds": 0,
+                                 "source": f"Reopened from {folder}", "reopened": True, "files": 0,
+                                 "report": details.clean(report.get("name"), report.get("description")),
+                                 "summary": jobs.summary(res)})
+    except saved.SavedRunError as exc:
+        if root:
+            shutil.rmtree(root, ignore_errors=True)
+        return show(req, str(exc))
+    except Exception:
+        traceback.print_exc()
+        if root:
+            shutil.rmtree(root, ignore_errors=True)
+        return show(req, "The saved report could not be opened; the console that started the upload page has the details.")
+    app.last_path, app.last_nets, app.last_report = "", "", {}
+    req.redirect(f"/runs/{run_id}/")
+
+
+def folder_kind(req):
+    """POST /folder-kind: whether a folder is a finished report's output folder (the page then
+    labels its button Open report)."""
+    body = req.read_json()
+    if body is None:
+        return req.send_json(403, {"error": "Forbidden"})
+    folder = folders.resolve(str(body.get("path") or ""))
+    return req.send_json(200, {"report": bool(folder) and os.path.isdir(folder) and saved.is_report_folder(folder)})

@@ -27,7 +27,7 @@ MAX_STATUS = 1024 * 1024           # a status file is a few hundred bytes; anyth
 FAILED = "The analysis failed; the console that started the upload page has the details."
 
 
-def _now() -> str:
+def now() -> str:
     return datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds") + "Z"
 
 
@@ -89,7 +89,7 @@ class Jobs:
             if len(self._live) >= resources.max_jobs() or resources.busy():
                 raise resources.BusyError("Another analysis is already running on this computer. Wait for it to "
                                           "finish and try again; the upload page lists it under Recent reports.")
-            write_status(root, {"state": "running", "started": _now(), "source": source, "files": len(files),
+            write_status(root, {"state": "running", "started": now(), "source": source, "files": len(files),
                                 "report": report or {}})
             self._live[run_id] = time.monotonic()
         thread = threading.Thread(target=self._run, name=f"pentaiwatch-run-{run_id}", daemon=True,
@@ -108,7 +108,7 @@ class Jobs:
             traceback.print_exc()          # the run folder is kept for a look at what went wrong
             status.update(state="failed", message=FAILED)
         finally:
-            status.update(finished=_now(), seconds=round(time.monotonic() - began, 1))
+            status.update(finished=now(), seconds=round(time.monotonic() - began, 1))
             try:
                 write_status(root, status)
             finally:

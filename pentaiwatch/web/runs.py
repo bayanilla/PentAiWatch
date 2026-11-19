@@ -128,7 +128,8 @@ def index(req, run_id: str):
         return req.send_page(200, page(f"{tab}Analyzing · PentAIWatch", body, [asset("run.js")],
                                        {"status": f"/runs/{run_id}/status", "elapsed": round(elapsed, 1)}))
     where = (f'<p class="hint">{source} · started {started}'
-             + (f" · took {_took(status.get('seconds'))}" if status.get("seconds") is not None else "")
+             + (f" · took {_took(status.get('seconds'))}" if status.get("seconds") is not None
+                and not status.get("reopened") else "")
              + f' · saved as <code>{html.escape(run_id)}</code></p>' + _about(status))
     if st == "stopped":
         body = (f"<h1>The analysis stopped{heading}</h1>" + where
