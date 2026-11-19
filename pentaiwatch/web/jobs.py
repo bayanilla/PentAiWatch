@@ -66,7 +66,26 @@ def summary(res: dict) -> dict:
                            f"to {v['runs'][0]['service']}, one every {v['runs'][0]['gap_seconds']:g} s",
                            "hosts": len({r["service"].split(":")[0].split("/")[0] for r in v["runs"]}),
                            "timeline": False, "tag": "Machine-steady"}
-                          for v in res["detection"].get("steady_sources") or []]}
+                          for v in res["detection"].get("steady_sources") or []]
+                       + _rotation_entries(res)}
+
+
+def _rotation_entries(res: dict) -> list[dict]:
+    """The rotating sources not already listed: each sweep, then the addresses that came back to it."""
+    det = res["detection"]
+    listed = {x["source"] for x in det["findings"] + (det.get("known_sources") or [])
+              + (det.get("steady_sources") or [])}
+    out = []
+    for g in det.get("rotations") or []:
+        members = [(g["sweeper"], f"swept {g['services_probed']:,} services; {len(g['joiners'])} new addresses "
+                    "came back to what it found", 0)]
+        members += [(j["source"], f"came back to what {g['sweeper']} swept", len(j["services"])) for j in g["joiners"]]
+        for ip, label, hosts in members:
+            if ip not in listed:
+                listed.add(ip)
+                out.append({"source": ip, "level": None, "label": label, "hosts": hosts or g["services_found"],
+                            "timeline": False, "tag": "Rotating sources"})
+    return out
 
 
 class Jobs:

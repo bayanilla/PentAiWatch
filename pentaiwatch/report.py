@@ -121,6 +121,38 @@ def _parallel_row(p: dict) -> str:
             f"{_when(p['first'])} to {_when(p['last'])} |")
 
 
+def _joiner(j: dict) -> str:
+    return (f"{j['source']} ({j['answered']:,} completed sessions to {', '.join(j['services'])}, "
+            f"{_when(j['first'])} to {_when(j['last'])})")
+
+
+def _rotation_row(g: dict) -> str:
+    return (f"| Rotating sources | {len(g['joiners']):,} new address{'' if len(g['joiners']) == 1 else 'es'} came straight back to what its sweep "
+            f"found: {'; '.join(_joiner(j) for j in g['joiners'])} |")
+
+
+def _rotation_lines(rotations: list[dict], st: dict) -> list[str]:
+    """Sweeps whose findings other, new addresses came straight back to."""
+    if not rotations:
+        return []
+    lines = ["### Rotating sources", "",
+             f"{_n(len(rotations), 'sweep')} found services that answered, and then {st['rotation']['min_joiners']} "
+             "or more addresses never seen before came straight back to those services and little else. An "
+             "operator rotating through proxies looks like this (CrowdStrike lists nine for one ARTEX operator): "
+             "each address alone can stay under the thresholds, so together they are one campaign. Services "
+             f"that more than {st['rotation']['max_service_sources']} outside addresses used are public and never "
+             "tie addresses together.", "",
+             "| Sweep from | Swept | Came back from | Services they came back to | Built from |",
+             "|---|---|---|---|---|"]
+    for g in rotations:
+        own = " (also a finding above)" if g["flagged"] else ""
+        lines.append(f"| {g['sweeper']}{own} | {g['services_probed']:,} services, {_when(g['probe_start'])} to "
+                     f"{_when(g['probe_end'])}; {g['services_found']:,} answered | "
+                     f"{'; '.join(_joiner(j) for j in g['joiners'])} | {', '.join(g['services'])} | "
+                     f"{_all([SOURCE_TEXT.get(x, x) for x in g['log_sources']])} |")
+    return lines + [""]
+
+
 def _steady_lines(steady: list[dict], st: dict) -> list[str]:
     """The sources flagged for machine-steady repetition alone."""
     if not steady:
@@ -202,6 +234,8 @@ def _finding_lines(f: dict, st: dict, map_file: str = "", timeline: bool = False
              f"| Threat hits | {f['threat_evidence']} |"]
     if f.get("parallel"):
         lines.append(_parallel_row(f["parallel"]))
+    if f.get("rotation"):
+        lines.append(_rotation_row(f["rotation"]))
     if f.get("known"):
         lines.append(f"| Published attacker address | {_published(f['known'])} |")
     if f.get("steady"):
@@ -275,10 +309,12 @@ def markdown(res: dict) -> str:
         lines += [f"{_n(other_pace, 'other source')} swept and then narrowed, but not in short bursts and "
                   f"{_band(st)} pauses. That looks like a scanner following up on what it found, or a person at "
                   "work, and is not flagged.", ""]
-    swept_only = det["probing_sources"] - det["narrowing_sources"]
+    rotations = det.get("rotations") or []
+    swept_only = det["probing_sources"] - det["narrowing_sources"] - sum(1 for g in rotations if not g["flagged"])
     if swept_only > 0:
         lines += [f"{_n(swept_only, 'other source')} swept many hosts or ports and did not narrow. That "
                   "looks like plain scanning and is not flagged.", ""]
+    lines += _rotation_lines(rotations, st)
     lines += _known_lines(det.get("known_sources") or [])
     lines += _steady_lines(det.get("steady_sources") or [], st)
     if map_file:
@@ -300,6 +336,9 @@ def markdown(res: dict) -> str:
               "- **Several attack paths at once** raises confidence in a Level 1 or Tier 0 finding: once it "
               "narrowed, the source's bursts worked more than one service, taking turns between them, as an "
               "agent running attack paths side by side does. It never flags a source on its own.",
+              "- **Rotating sources.** One address sweeps and other, new addresses come straight back to what "
+              "it found, as an operator rotating through proxies does. The sweep and the addresses are flagged "
+              "together as one campaign.",
               "- **Named targets** are the kinds of service the ARTEX and CyberStrikeAI reporting says the agents "
               "went for (edge-device consoles and VPNs, AI model gateways, databases, remote access), by port. "
               "They are named so you can check those services first; they do not change whether a source is "
@@ -348,6 +387,11 @@ def markdown(res: dict) -> str:
               f"{st['steady']['max_jitter']:.0%} of their mean.",
               f"- Several attack paths at once: {st['parallel']['min_bursts']}+ bursts after narrowing, each working "
               f"{st['parallel']['min_services']}+ services and going back to one it left.",
+              f"- Rotating sources: {st['rotation']['min_joiners']}+ new addresses whose first session is between "
+              f"the sweep's start and {st['narrowing']['max_start_delay_minutes']:g} minutes after its end, with "
+              f"{st['narrowing']['min_sessions_per_service']}+ completed sessions to a service it found and "
+              f"{st['narrowing']['min_focus_share']:.0%}+ of their sessions to those services; services more than "
+              f"{st['rotation']['max_service_sources']} outside addresses used never count.",
               _targets_line(st),
               f"- Never flagged: {', '.join(st['allowlist'] + [k['cidr'] for k in res['known_scanners']]) or 'nothing listed'}."
               + (f" That left out {_n(det['never_flagged_sources'], 'outside source')} with "

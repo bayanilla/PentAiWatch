@@ -203,6 +203,21 @@ confidence" and lists the services. This never flags a source on its own, and it
 start times, so a Tier 0 finding never has it. Palo Alto times are whole seconds, so sessions in the
 same second keep the order they have in the export.
 
+### Rotating sources
+
+Operators rotate through proxies: CrowdStrike lists nine for one ARTEX operator. Each address on
+its own can stay under the thresholds, so PentAIWatch also ties them together. A sweep that fires
+the probing signal and finds a few services answering is the anchor. Other addresses join it when
+they were never seen before in the lookback, their first session falls between the sweep's start and
+`narrowing.max_start_delay_minutes` (15) after its end, they have
+`narrowing.min_sessions_per_service` (5) or more completed sessions to a service the sweep found,
+and `narrowing.min_focus_share` (60%) or more of their sessions go to those services. An address
+that swept itself never joins, because it is scored on its own. With `rotation.min_joiners` (2) or
+more joiners, the sweep and its joiners are flagged together under "Rotating sources". A service that
+more than `rotation.max_service_sources` (20) outside addresses used in the lookback is public, such
+as a web site, so new visitors to it never tie addresses together. A campaign whose sweep is itself
+split across proxies is not tied together yet.
+
 ### Named targets
 
 The ARTEX and CyberStrikeAI reporting says what the agents went for: FortiGate and other firewall
@@ -267,6 +282,10 @@ first is used, a warning names the others, and `--config` settles it.
   "parallel": {
     "min_services": 2,
     "min_bursts": 5
+  },
+  "rotation": {
+    "min_joiners": 2,
+    "max_service_sources": 20
   },
   "targets": {
     "Edge device admin or VPN": [541, 4443, 8443, 9443, 10443],
@@ -403,9 +422,9 @@ VulnScope MAX's does:
 
 - **Proxy rotation splits campaigns.** These tools rotate through residential, datacenter and
   free proxies or Tor when blocked. Scoring is per source address, so one campaign can be split
-  across several sources, each below the thresholds or each reported on its own. Grouping
-  sources by targeted service, time window and network owner (ASN) is planned; the detection
-  keeps what that step needs.
+  across several sources, each below the thresholds or each reported on its own. New addresses
+  that come straight back to what one sweep found are tied to it (see Rotating sources), but a
+  campaign whose sweep is itself split across addresses is not tied together yet.
 - **Timing sees connection starts, nothing inside a connection.** A tool that sends many requests
   over one connection it keeps open, or runs several jobs at once from one address, shows fewer
   pauses and can go unflagged.

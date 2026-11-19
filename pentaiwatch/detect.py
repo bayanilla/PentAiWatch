@@ -138,6 +138,7 @@ class Finding:
     targets: list[str] = field(default_factory=list)  # kinds of target among all the services it narrowed onto
     parallel: ParallelPaths | None = None   # several attack paths at once, if seen: higher confidence
     confidence: str = "standard"            # "higher" when several attack paths at once were seen
+    rotation: Rotation | None = None        # new addresses that came back to what its sweep found
 
 
 @dataclass
@@ -163,6 +164,31 @@ class ParallelPaths:
     services: list[str]          # "host:port/proto" in those bursts, most sessions first (capped)
     first: str
     last: str
+
+
+@dataclass
+class Joiner:
+    """An address that came straight back to what another address's sweep found."""
+    source: str
+    sessions: int                # its sessions in the window from its first one
+    answered: int                # of those, completed sessions to what the sweep found
+    services: list[str]          # "host:port/proto" of those, most sessions first (capped)
+    first: str
+    last: str
+
+
+@dataclass
+class Rotation:
+    """Rotating sources: one sweep, and new addresses that came back to what it found."""
+    sweeper: str
+    flagged: bool                # the sweeper is a finding of its own as well
+    probe_start: str
+    probe_end: str
+    services_probed: int
+    services_found: int          # of those, the ones that answered and are not public
+    joiners: list[Joiner]
+    services: list[str]          # what the sweep found that the joiners came back to
+    log_sources: list[str]
 
 
 @dataclass
@@ -199,6 +225,7 @@ class Detection:
     findings: list[Finding] = field(default_factory=list)
     known_sources: list[KnownSource] = field(default_factory=list)
     steady_sources: list[SteadySource] = field(default_factory=list)
+    rotations: list[Rotation] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     lookback_start: str | None = None
     lookback_end: str | None = None
@@ -278,6 +305,11 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
                          runs_total=len(runs), sessions=int(con.execute(
                              "SELECT count(*) FROM pw_sessions WHERE src_ip = ?", [src]).fetchone()[0]))
             for src, runs in sorted(steady.items(), key=lambda kv: (-kv[1][0].sessions, kv[0]))]
+        out.rotations = _rotation(con, cfg, {f.source for f in out.findings})
+        for g in out.rotations:
+            for f in out.findings:
+                if f.source == g.sweeper:
+                    f.rotation = g
         listed_but_allowed = sorted(ip for ip in bad if ip in _allowed(con))
         if listed_but_allowed:
             out.warnings.append(f"{len(listed_but_allowed)} source(s) on a list of published attacker addresses are "
@@ -728,6 +760,90 @@ def _parallel(con, cfg: Config, src: str, since) -> ParallelPaths | None:
         bursts=len(hits), bursts_total=len(rows), most_services=max(int(r[3]) for r in hits),
         services=[f"{h}:{port}/{proto}" for h, port, proto, _ in svc[:MAX_PARALLEL_SERVICES]],
         first=_iso(min(r[1] for r in hits)), last=_iso(max(r[2] for r in hits)))
+
+
+# -- 8c. rotating sources ----------------------------------------------------------------------
+MAX_JOINER_SERVICES = 10
+
+
+def _rotation(con, cfg: Config, flagged: set[str]) -> list[Rotation]:
+    """Rotating sources. For each window where a source's sweep fired signal 1 and few of the probed
+    services answered (as narrowing asks): the answered TCP and UDP services it found that are not
+    public (``max_service_sources``). A joiner is another address first seen in the lookback between
+    the sweep's start and ``max_start_delay_minutes`` after its end that, for one window from its
+    first session, sent ``min_focus_share`` or more of its sessions to those services, with
+    ``min_sessions_per_service`` or more completed sessions to at least one. A sweep with
+    ``min_joiners`` or more joiners is a rotation (the window with the most joiners, per sweeper). An
+    address that fits two sweeps joins the one that started last before it came."""
+    n, r = cfg.narrowing, cfg.rotation
+    rows = con.execute("""
+        WITH sweep AS (
+            SELECT src_ip, k, probe_start, probe_end, services FROM pw_probe
+            WHERE answered > 0 AND answered <= $max_answered_share * services),
+        public AS (
+            SELECT dst_ip, dst_port, proto FROM pw_sessions
+            GROUP BY ALL HAVING count(DISTINCT src_ip) > $max_sources),
+        found AS (
+            SELECT DISTINCT w.src_ip AS sweeper, w.k, v.dst_ip, v.dst_port, v.proto
+            FROM sweep w JOIN pw_svc v ON v.src_ip = w.src_ip AND v.bucket IN (w.k, w.k + 1)
+            WHERE v.answered > 0 AND list_contains(CAST($protocols AS VARCHAR[]), v.proto)
+              AND NOT EXISTS (SELECT 1 FROM public p WHERE p.dst_ip = v.dst_ip AND p.proto = v.proto
+                              AND p.dst_port IS NOT DISTINCT FROM v.dst_port)),
+        seen AS (
+            SELECT src_ip, min(start_ts) AS first_ts FROM pw_sessions
+            WHERE src_ip NOT IN (SELECT src_ip FROM pw_probe) GROUP BY src_ip),
+        cand AS (
+            SELECT w.src_ip AS sweeper, w.k, w.probe_start, s.src_ip, s.dst_ip, s.dst_port, s.proto, s.outcome, s.start_ts,
+                   f.sweeper IS NOT NULL AS on_found
+            FROM sweep w
+            JOIN seen j ON j.src_ip <> w.src_ip AND j.first_ts >= w.probe_start
+                       AND j.first_ts <= w.probe_end + to_seconds($max_delay)
+            JOIN pw_sessions s ON s.src_ip = j.src_ip AND s.start_ts < j.first_ts + to_seconds($window)
+            LEFT JOIN found f ON f.sweeper = w.src_ip AND f.k = w.k AND f.dst_ip = s.dst_ip
+                             AND f.proto = s.proto AND f.dst_port IS NOT DISTINCT FROM s.dst_port),
+        per_svc AS (
+            SELECT sweeper, k, src_ip, dst_ip, dst_port, proto, count(*) FILTER (outcome = 'answered') AS answered
+            FROM cand WHERE on_found GROUP BY sweeper, k, src_ip, dst_ip, dst_port, proto),
+        returned AS (
+            SELECT DISTINCT sweeper, k, src_ip FROM per_svc WHERE answered >= $min_sessions),
+        joiner AS (
+            SELECT c.sweeper, c.k, c.src_ip, count(*) AS sessions,
+                   count(*) FILTER (c.on_found AND c.outcome = 'answered') AS answered,
+                   min(c.start_ts) AS first_ts, max(c.start_ts) AS last_ts
+            FROM cand c JOIN returned USING (sweeper, k, src_ip)
+            GROUP BY c.sweeper, c.k, c.src_ip
+            HAVING count(*) FILTER (c.on_found) >= $min_focus * count(*)
+            -- an address joins one sweep only: the latest to start before it came
+            QUALIFY row_number() OVER (PARTITION BY c.src_ip ORDER BY max(c.probe_start) DESC, c.sweeper, c.k) = 1),
+        best AS (
+            SELECT sweeper, k FROM joiner GROUP BY sweeper, k HAVING count(*) >= $min_joiners
+            QUALIFY row_number() OVER (PARTITION BY sweeper ORDER BY count(*) DESC, k) = 1)
+        SELECT j.sweeper, j.k, j.src_ip, j.sessions, j.answered, j.first_ts, j.last_ts,
+               w.probe_start, w.probe_end, w.services,
+               (SELECT count(*) FROM found f WHERE f.sweeper = j.sweeper AND f.k = j.k),
+               (SELECT list(p.dst_ip || coalesce(':' || p.dst_port, '') || '/' || p.proto
+                            ORDER BY p.answered DESC, p.dst_ip, p.dst_port)
+                FROM per_svc p WHERE p.sweeper = j.sweeper AND p.k = j.k AND p.src_ip = j.src_ip AND p.answered > 0)
+        FROM joiner j JOIN best USING (sweeper, k) JOIN sweep w ON w.src_ip = j.sweeper AND w.k = j.k
+        ORDER BY j.sweeper, j.first_ts, j.src_ip""",
+                       {"max_answered_share": float(n.max_answered_share), "max_sources": int(r.max_service_sources),
+                        "protocols": [p.lower() for p in n.protocols], "max_delay": float(n.max_start_delay_minutes) * 60,
+                        "window": cfg.window_hours * 3600, "min_focus": float(n.min_focus_share),
+                        "min_sessions": int(n.min_sessions_per_service), "min_joiners": int(r.min_joiners)}).fetchall()
+    groups: dict[str, Rotation] = {}
+    for sweeper, _k, src, sessions, answered, first, last, p_start, p_end, probed, found, svc in rows:
+        g = groups.get(sweeper)
+        if g is None:
+            g = groups[sweeper] = Rotation(
+                sweeper=sweeper, flagged=sweeper in flagged, probe_start=_iso(p_start), probe_end=_iso(p_end),
+                services_probed=int(probed), services_found=int(found), joiners=[], services=[], log_sources=[])
+        svc = list(svc or [])
+        g.joiners.append(Joiner(source=src, sessions=int(sessions), answered=int(answered),
+                                services=svc[:MAX_JOINER_SERVICES], first=_iso(first), last=_iso(last)))
+        g.services += [s for s in svc if s not in g.services]
+    for g in groups.values():
+        g.log_sources = sorted({x for ip in [g.sweeper] + [j.source for j in g.joiners] for x in log_sources(con, ip)})
+    return sorted(groups.values(), key=lambda g: (-len(g.joiners), g.sweeper))
 
 
 # -- 9. published attacker addresses ---------------------------------------------------------

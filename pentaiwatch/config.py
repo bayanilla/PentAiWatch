@@ -101,6 +101,19 @@ class Parallel:
     min_bursts: int = 5                  # such bursts after narrowing
 
 
+@dataclass
+class Rotation:
+    """Rotating sources: one address sweeps, and other, new addresses come straight back to what the
+    sweep found answering, as an operator who rotates through proxies does (CrowdStrike lists nine
+    for one ARTEX operator). Each address alone can stay under the thresholds; together they are one
+    campaign. The narrowing settings decide what "came back" means (completed sessions per service,
+    how soon after the sweep, and the share of sessions that go to what answered)."""
+    min_joiners: int = 2                 # other addresses that came back to what the sweep found
+    # A service more outside addresses than this used in the lookback is public (a web site, a mail
+    # relay): new visitors to it are expected, so it never ties addresses together.
+    max_service_sources: int = 20
+
+
 # Kinds of service the ARTEX and CyberStrikeAI reporting names as what the agents went for, by TCP or
 # UDP port. A flagged source's services on these ports are named in the report; they do not change
 # whether it is flagged. Port 443 is left out: too much else answers on it to name anything.
@@ -198,6 +211,7 @@ class Config:
     timing: Timing = field(default_factory=Timing)
     steady: Steady = field(default_factory=Steady)
     parallel: Parallel = field(default_factory=Parallel)
+    rotation: Rotation = field(default_factory=Rotation)
     # Named kinds of target: name -> ports. Your names are added; giving a default name replaces its
     # ports, and an empty list drops it.
     targets: dict[str, list[int]] = field(
@@ -335,6 +349,8 @@ def check(cfg: Config, name: str = "settings") -> None:
                         "always even")
     if cfg.parallel.min_services < 2 or cfg.parallel.min_bursts < 1:
         raise UserError(f"{name}: parallel.min_services must be 2 or more, and parallel.min_bursts 1 or more")
+    if cfg.rotation.min_joiners < 1 or cfg.rotation.max_service_sources < 1:
+        raise UserError(f"{name}: rotation.min_joiners and rotation.max_service_sources must be 1 or more")
     if cfg.window_hours > cfg.lookback_hours:
         raise UserError(f"{name}: window_hours cannot be longer than lookback_hours")
     t = cfg.timing
