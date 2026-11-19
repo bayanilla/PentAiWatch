@@ -164,6 +164,8 @@ def _done(app, run_id: str, status: dict, where: str, heading: str) -> str:
                       [f'<a href="explorer.html#source={link}" target="_blank" rel="noopener">on the map</a>'])
             if f.get("known") and level is not None:
                 extras.append("published attacker address")
+            if f.get("parallel"):
+                extras.append("several attack paths at once")
             if f.get("timeline"):
                 extras.append(f'<a href="explorer.html#timeline={link}" target="_blank" rel="noopener">Timeline</a>')
             items.append(f'<li><code>{html.escape(ip)}</code> <span class="level{" t0" if level == 0 else ""}">'

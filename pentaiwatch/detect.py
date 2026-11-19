@@ -136,6 +136,8 @@ class Finding:
     known: dict | None = None    # its entry in a list of published attacker addresses, if any
     steady: list[SteadyRun] = field(default_factory=list)   # machine-steady repetition, if any
     targets: list[str] = field(default_factory=list)  # kinds of target among all the services it narrowed onto
+    parallel: ParallelPaths | None = None   # several attack paths at once, if seen: higher confidence
+    confidence: str = "standard"            # "higher" when several attack paths at once were seen
 
 
 @dataclass
@@ -150,6 +152,17 @@ class SteadyRun:
     first: str
     last: str
     target: str = ""             # the kind of target the service is, '' when none
+
+
+@dataclass
+class ParallelPaths:
+    """A flagged source that, after narrowing, worked several services in the same burst."""
+    bursts: int                  # bursts that worked min_services+ services, switching back and forth
+    bursts_total: int            # all its bursts with answered sessions after narrowing
+    most_services: int           # the most services one of those bursts worked
+    services: list[str]          # "host:port/proto" in those bursts, most sessions first (capped)
+    first: str
+    last: str
 
 
 @dataclass
@@ -653,6 +666,7 @@ def _findings(con, cfg: Config, nm: NetMap) -> list[Finding]:
                           first_return=_iso(ts), target=target_of(tports, port, proto))
                   for h, port, proto, c, ts in svc_rows[:MAX_SERVICES_LISTED]]
         agentic = status == "agentic"
+        parallel = _parallel(con, cfg, src, n_start)
         out.append(Finding(
             source=src, level=1 if agentic else 0, label=LEVEL_1 if agentic else TIER_0, log_sources=sensors,
             start_times=methods, probe_start=_iso(p_start), probe_end=_iso(p_end), services_probed=int(services),
@@ -662,8 +676,58 @@ def _findings(con, cfg: Config, nm: NetMap) -> list[Finding]:
             sessions=int(n), first_seen=_iso(first), last_seen=_iso(last),
             campaign_hours=round((last - first).total_seconds() / 3600, 2),
             timing=_pace(con, cfg, src, status, int(n), int(timed)),
-            threat_evidence=threat_text, notes=notes, targets=_names(tports, [(r[1], r[2]) for r in svc_rows])))
+            threat_evidence=threat_text, notes=notes, targets=_names(tports, [(r[1], r[2]) for r in svc_rows]),
+            parallel=parallel, confidence="higher" if parallel else "standard"))
     return sorted(out, key=lambda f: (-f.level, -f.sessions, f.source))
+
+
+# -- 8b. several attack paths at once --------------------------------------------------------
+MAX_PARALLEL_SERVICES = 10
+# One flagged source's answered TCP and UDP sessions from narrowing on, with a known START time, each
+# numbered with its burst (a gap longer than the timing setting's burst gap starts a new one).
+_PARALLEL_BURSTS = """
+        WITH s AS (
+            SELECT start_ts, seq, dst_ip, dst_port, proto,
+                   epoch(start_ts) - epoch(lag(start_ts) OVER (ORDER BY start_ts, seq)) AS gap
+            FROM pw_sessions
+            WHERE src_ip = $src AND start_ts >= $since AND outcome = 'answered' AND proto IN ('tcp', 'udp')
+              AND list_contains(CAST($timed AS VARCHAR[]), start_method)),
+        b AS (
+            SELECT *, sum(CASE WHEN gap IS NULL OR gap > $burst_gap THEN 1 ELSE 0 END)
+                          OVER (ORDER BY start_ts, seq ROWS UNBOUNDED PRECEDING) AS burst
+            FROM s)
+"""
+
+
+def _parallel(con, cfg: Config, src: str, since) -> ParallelPaths | None:
+    """Several attack paths at once, for one flagged source: from narrowing on, its answered TCP and
+    UDP sessions with a known START time, cut into bursts by the timing setting's burst gap. A burst
+    counts when it works ``min_services`` or more services and switches between them more often
+    than finishing one before starting the next would (it goes back to a service it left)."""
+    p = cfg.parallel
+    args = {"src": src, "since": since, "timed": list(TIMED), "burst_gap": float(cfg.timing.burst_gap_seconds)}
+    rows = con.execute(_PARALLEL_BURSTS + """,
+        sw AS (
+            SELECT *, CASE WHEN lag(dst_ip) OVER w IS DISTINCT FROM dst_ip
+                             OR lag(dst_port) OVER w IS DISTINCT FROM dst_port
+                             OR lag(proto) OVER w IS DISTINCT FROM proto THEN 1 ELSE 0 END AS change
+            FROM b WINDOW w AS (PARTITION BY burst ORDER BY start_ts, seq)),
+        per AS (
+            SELECT burst, min(start_ts) AS first_ts, max(start_ts) AS last_ts,
+                   count(DISTINCT (dst_ip, dst_port, proto)) AS services, sum(change) AS changes
+            FROM sw GROUP BY burst)
+        SELECT burst, first_ts, last_ts, services, services >= $min_services AND changes > services AS hit
+        FROM per ORDER BY burst""", {**args, "min_services": int(p.min_services)}).fetchall()
+    hits = [r for r in rows if r[4]]
+    if len(hits) < p.min_bursts:
+        return None
+    svc = con.execute(_PARALLEL_BURSTS + """
+        SELECT dst_ip, dst_port, proto, count(*) AS n FROM b WHERE list_contains($bursts, burst)
+        GROUP BY ALL ORDER BY n DESC, dst_ip, dst_port""", {**args, "bursts": [int(r[0]) for r in hits]}).fetchall()
+    return ParallelPaths(
+        bursts=len(hits), bursts_total=len(rows), most_services=max(int(r[3]) for r in hits),
+        services=[f"{h}:{port}/{proto}" for h, port, proto, _ in svc[:MAX_PARALLEL_SERVICES]],
+        first=_iso(min(r[1] for r in hits)), last=_iso(max(r[2] for r in hits)))
 
 
 # -- 9. published attacker addresses ---------------------------------------------------------

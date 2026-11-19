@@ -90,6 +90,17 @@ class Steady:
     max_jitter: float = 0.10
 
 
+@dataclass
+class Parallel:
+    """Several attack paths at once: once a flagged source has narrowed, its bursts work more than one
+    service, switching back and forth between them, as an agent that runs several attack paths side by
+    side does (ARTEX did). A tool that finishes one service before it starts the next switches once
+    and does not count. This raises a finding's confidence; it never flags a source on its own. Only
+    answered sessions with a known START time are used, so the sweep itself never counts."""
+    min_services: int = 2                # services one burst works, switching back to one it left
+    min_bursts: int = 5                  # such bursts after narrowing
+
+
 # Kinds of service the ARTEX and CyberStrikeAI reporting names as what the agents went for, by TCP or
 # UDP port. A flagged source's services on these ports are named in the report; they do not change
 # whether it is flagged. Port 443 is left out: too much else answers on it to name anything.
@@ -186,6 +197,7 @@ class Config:
     narrowing: Narrowing = field(default_factory=Narrowing)
     timing: Timing = field(default_factory=Timing)
     steady: Steady = field(default_factory=Steady)
+    parallel: Parallel = field(default_factory=Parallel)
     # Named kinds of target: name -> ports. Your names are added; giving a default name replaces its
     # ports, and an empty list drops it.
     targets: dict[str, list[int]] = field(
@@ -321,6 +333,8 @@ def check(cfg: Config, name: str = "settings") -> None:
     if cfg.steady.min_sessions < 3:
         raise UserError(f"{name}: steady.min_sessions must be 3 or more: two sessions have one gap, which is "
                         "always even")
+    if cfg.parallel.min_services < 2 or cfg.parallel.min_bursts < 1:
+        raise UserError(f"{name}: parallel.min_services must be 2 or more, and parallel.min_bursts 1 or more")
     if cfg.window_hours > cfg.lookback_hours:
         raise UserError(f"{name}: window_hours cannot be longer than lookback_hours")
     t = cfg.timing

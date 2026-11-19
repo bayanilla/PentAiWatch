@@ -68,7 +68,8 @@ def main(argv=None) -> int:
     for f in found:
         tier = "tier 0" if f["level"] == 0 else f"level {f['level']}"
         hosts = len(f["hosts_hit"])
-        also = "  [published attacker address]" if f.get("known") else ""
+        also = ("  [several attack paths at once]" if f.get("parallel") else "") + \
+               ("  [published attacker address]" if f.get("known") else "")
         print(f"  {f['source']}  {tier}: {f['label']}  ({hosts} host{'' if hosts == 1 else 's'} hit){also}")
     for k in known:
         print(f"  {k['source']}  published attacker address: {k['name'] or 'listed'}  "

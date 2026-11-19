@@ -114,6 +114,13 @@ def _steady_run(r: dict) -> str:
             f"({spread}), {r['answered']:,} answered, {_when(r['first'])} to {_when(r['last'])}")
 
 
+def _parallel_row(p: dict) -> str:
+    many = "2" if p["most_services"] == 2 else f"2 to {p['most_services']}"
+    return (f"| Several attack paths at once | Higher confidence: {p['bursts']:,} of its {p['bursts_total']:,} bursts "
+            f"after narrowing worked {many} services, taking turns between them ({', '.join(p['services'])}), "
+            f"{_when(p['first'])} to {_when(p['last'])} |")
+
+
 def _steady_lines(steady: list[dict], st: dict) -> list[str]:
     """The sources flagged for machine-steady repetition alone."""
     if not steady:
@@ -193,6 +200,8 @@ def _finding_lines(f: dict, st: dict, map_file: str = "", timeline: bool = False
              f"{_when(f['last_seen'])}, {f['sessions']:,} sessions |",
              f"| Probe start to first vulnerability hit | {f['threat_evidence']} |",
              f"| Threat hits | {f['threat_evidence']} |"]
+    if f.get("parallel"):
+        lines.append(_parallel_row(f["parallel"]))
     if f.get("known"):
         lines.append(f"| Published attacker address | {_published(f['known'])} |")
     if f.get("steady"):
@@ -288,6 +297,9 @@ def markdown(res: dict) -> str:
               "looked like. The list says who published it and how sure they were.",
               "- **Machine-steady repetition.** A source that hit one service over and over at an almost "
               "constant gap, as a scripted login brute force does, is flagged on its own.",
+              "- **Several attack paths at once** raises confidence in a Level 1 or Tier 0 finding: once it "
+              "narrowed, the source's bursts worked more than one service, taking turns between them, as an "
+              "agent running attack paths side by side does. It never flags a source on its own.",
               "- **Named targets** are the kinds of service the ARTEX and CyberStrikeAI reporting says the agents "
               "went for (edge-device consoles and VPNs, AI model gateways, databases, remote access), by port. "
               "They are named so you can check those services first; they do not change whether a source is "
@@ -334,6 +346,8 @@ def markdown(res: dict) -> str:
               f"- Machine-steady repetition: {st['steady']['min_sessions']}+ sessions in a row to one service, each "
               f"within {st['steady']['max_gap_seconds']:g} seconds of the last, gaps varying by at most "
               f"{st['steady']['max_jitter']:.0%} of their mean.",
+              f"- Several attack paths at once: {st['parallel']['min_bursts']}+ bursts after narrowing, each working "
+              f"{st['parallel']['min_services']}+ services and going back to one it left.",
               _targets_line(st),
               f"- Never flagged: {', '.join(st['allowlist'] + [k['cidr'] for k in res['known_scanners']]) or 'nothing listed'}."
               + (f" That left out {_n(det['never_flagged_sources'], 'outside source')} with "
