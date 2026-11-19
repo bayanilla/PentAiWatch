@@ -326,7 +326,29 @@ class RunFiles(Server):
     def test_recent_ignores_other_folders(self):
         os.makedirs(os.path.join(self.data, ".hidden"))
         os.makedirs(os.path.join(self.data, "no-status"))
-        self.assertEqual([r for r, _ in runs.recent(self.app)], ["r1_2026-01-01_00-00-00"])
+        self.assertEqual([r for r, *_ in runs.recent(self.app)], ["r1_2026-01-01_00-00-00"])
+
+
+class RunState(unittest.TestCase):
+    """A run that finishes while its state is being read is read as finished, never as stopped."""
+
+    def test_finishing_between_the_two_looks(self):
+        with tempfile.TemporaryDirectory() as root:
+            jobs.write_status(root, {"state": "running"})
+
+            def finish(run_id):                      # the job ends at the worst moment: final status, then off the list
+                jobs.write_status(root, {"state": "done"})
+                return False
+
+            app = mock.Mock(run_root=lambda run_id: root)
+            app.jobs.is_live.side_effect = finish
+            status, live = runs.read_run(app, "r1")
+            self.assertEqual(runs.state(status, live), "done")
+
+    def test_running_and_stopped(self):
+        self.assertEqual(runs.state({"state": "running"}, True), "running")
+        self.assertEqual(runs.state({"state": "running"}, False), "stopped")
+        self.assertEqual(runs.state({"state": "odd"}, True), "failed")
 
 
 class Details(Server):
