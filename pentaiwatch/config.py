@@ -90,6 +90,17 @@ class Steady:
     max_jitter: float = 0.10
 
 
+# Kinds of service the ARTEX and CyberStrikeAI reporting names as what the agents went for, by TCP or
+# UDP port. A flagged source's services on these ports are named in the report; they do not change
+# whether it is flagged. Port 443 is left out: too much else answers on it to name anything.
+DEFAULT_TARGETS = {
+    "Edge device admin or VPN": [541, 4443, 8443, 9443, 10443],   # FortiGate and other firewall consoles
+    "AI model gateway": [4000, 11434],                             # LiteLLM, Ollama
+    "Database": [1433, 1521, 3306, 5432, 6379, 9200, 27017],
+    "Remote access": [22, 3389, 5985, 5986],                       # SSH, RDP, WinRM
+}
+
+
 # -- Palo Alto logs: nothing about the export's layout is fixed in code ----------------------
 # CSV exports with a header row: the column names that may hold each field. The first one the
 # file has is used. Names are compared ignoring case, spaces and punctuation, so "Source address",
@@ -175,6 +186,10 @@ class Config:
     narrowing: Narrowing = field(default_factory=Narrowing)
     timing: Timing = field(default_factory=Timing)
     steady: Steady = field(default_factory=Steady)
+    # Named kinds of target: name -> ports. Your names are added; giving a default name replaces its
+    # ports, and an empty list drops it.
+    targets: dict[str, list[int]] = field(
+        default_factory=lambda: {k: list(v) for k, v in DEFAULT_TARGETS.items()}, metadata={"kind": "targets"})
     paloalto: PaloAlto = field(default_factory=PaloAlto)
     # Filled by the pipeline from network_map.csv and known_scanners.csv (not settings).
     networks: list[dict] = field(default_factory=list, metadata={"runtime": True})
@@ -245,6 +260,19 @@ def _apply_map(current: dict, value, kind: str, name: str, where: str) -> None:
     (null: this log does not have the field)."""
     if not isinstance(value, dict):
         raise UserError(f"{name}: '{where}' must be an object")
+    if kind == "targets":
+        for key, item in value.items():
+            if not isinstance(item, list) or not all(isinstance(v, int) and not isinstance(v, bool) for v in item):
+                raise UserError(f"{name}: '{where}.{key}' must be a list of port numbers")
+            label = key.strip()
+            if not label:
+                raise UserError(f"{name}: '{where}' has a target with no name")
+            current.pop(key, None)
+            if item:
+                current[label] = list(item)
+            else:
+                current.pop(label, None)
+        return
     for key, item in value.items():
         if key not in current:
             raise UserError(f"{name}: '{where}.{key}' is not a field. Fields here: {', '.join(sorted(current))}")
@@ -317,6 +345,15 @@ def check(cfg: Config, name: str = "settings") -> None:
     if pa.answered_min_bytes_received < 1:
         raise UserError(f"{name}: paloalto.answered_min_bytes_received must be 1 or more: a session with "
                         "nothing back was not answered")
+    seen: dict[int, str] = {}
+    for label, ports in cfg.targets.items():
+        for port in ports:
+            if not 1 <= port <= 65535:
+                raise UserError(f"{name}: targets.{label}: {port} is not a port number (1 to 65535)")
+            if seen.get(port, label) != label:
+                raise UserError(f"{name}: targets: port {port} is in both '{seen[port]}' and '{label}'; "
+                                "give each port one name")
+            seen[port] = label
     for label, offsets in (("syslog_offsets", pa.syslog_offsets), ("threat_syslog_offsets", pa.threat_syslog_offsets)):
         for key, value in offsets.items():
             if value is not None and not -3 <= value <= 400:

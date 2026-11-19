@@ -210,7 +210,7 @@ class EndToEndTests(Base):
             md = fh.read()
         self.assertIn("## Agentic activity", md)
         self.assertIn(f"### {sample.AGENT}: Level 1. {LEVEL_1}", md)
-        self.assertIn("| 10.10.1.10 443/tcp | DMZ |", md)
+        self.assertIn("| 10.10.1.10 443/tcp |  | DMZ |", md)
         self.assertIn("threat logs not provided", md)
         self.assertIn("proxies or Tor", md)
         self.assertNotIn(sample.SCANNER, md)

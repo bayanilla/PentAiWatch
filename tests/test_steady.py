@@ -101,7 +101,7 @@ class Steady(unittest.TestCase):
         self.assertEqual(f["source"], sample.AGENT)
         self.assertEqual([r["sessions"] for r in f["steady"]], [120])
         self.assertEqual(det["steady_sources"], [])
-        self.assertIn("| Machine-steady repetition | 10.10.1.11:8443/tcp: 120 sessions", md)
+        self.assertIn("| Machine-steady repetition | 10.10.1.11:8443/tcp (Edge device admin or VPN): 120 sessions", md)
 
     def test_known_scanners_are_left_out(self):
         det, _ = self.analyze(sample.sessions() + brute(), settings={"allowlist": [BRUTE]})
