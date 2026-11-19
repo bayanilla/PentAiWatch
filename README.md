@@ -39,6 +39,10 @@ The output folder gets:
 | `report.md` | The same report as Markdown. |
 | `results.json` | Everything the report shows, as data. |
 
+Give the run a name and a few lines about it with `--name "DMZ sweep review" --description
+"Case 42, asked by the SOC"`: they are shown at the top of the report and in the Explorer, and kept
+in `results.json` as `report`.
+
 Only connection metadata is read, so nothing here needs SSL decryption. The tool makes no
 network connections, and neither do the pages it writes.
 
@@ -59,11 +63,15 @@ works like VulnScope MAX's upload page:
   `network_map.csv` or `known_scanners.csv` among them is used as it would be on the command line.
 - **Internal networks (optional).** Ranges typed here take the place of the settings file's
   `internal_nets` for this run, and the report says so.
+- **Report details (optional).** A report name and a description, as `--name` and
+  `--description` give on the command line. The run's folder is named after the report plus the
+  date and time, for example `DMZ-sweep-review_2026-11-19_10-19-14`.
 
 The analysis runs in the background. Its page shows a timer while it runs (the tab can be closed)
 and then the result: the flagged sources, each with links to its place on the map and its
 Timeline, and the report, the Explorer, `report.md` and `results.json`. **Recent reports** on the
-upload page lists the last ten runs. Each run is a folder in `pentaiwatch_runs/` (`--data-dir`):
+upload page lists the last ten runs. Each run is a folder in `pentaiwatch_runs/` (`--data-dir`),
+named after the report, or a random name, plus the date and time:
 `in/` holds the uploads (or `SOURCE.txt`, the list of files read in place), `out/` the usual
 output, and `STATUS.json` how the run went. One analysis runs at a time (`PENTAIWATCH_MAX_JOBS`).
 The page's own [security notes](#security-notes) are at the end of that section.
@@ -368,7 +376,8 @@ The upload page follows MAX's:
 |---|---|---|
 | `pentaiwatch/web/handler.py` | `vulnflow/web/handler.py` | The same host, origin, CSRF and access-token checks. Pages' scripts are named by hash in their policy, and a run's files are sent in a sandbox. |
 | `pentaiwatch/web/multipart.py` | `vulnflow/multipart.py` | Where each file goes is decided by the caller, so uploaded names and subfolders are kept. |
-| `pentaiwatch/web/runname.py` | `vulnflow/runname.py` | Nothing but the names. |
+| `pentaiwatch/web/runname.py`, `pentaiwatch/details.py` | `vulnflow/runname.py` | Split in two: run folder names, and the report name and description. The network field is left out: it is for MAX's Compare page. |
+| `pentaiwatch/static/web/details.js` | `vulnflow/static/upload.js` | Only the part that sends the report details with either form. |
 | `pentaiwatch/web/folders.py`, `static/web/folder_picker.js` | `vulnflow/web/folders.py`, `static/folder_picker.js` | The Docker container mode is left out. |
 | `pentaiwatch/static/web/busy.js`, `web.css` | `vulnflow/static/busy.js`, `forms.css` | The overlay as it is; the styles cut to these pages, light like the report and Graphite when the system is dark. |
 | `pentaiwatch/web/upload.py`, `runs.py`, `jobs.py`, `server.py`, `app.py`, `pages.py`, `routes.py` | `vulnflow/web/` | Written for this tool. A run goes on in the background and its page asks how it is going, so a long run never depends on one request. Nessus, the Security Assistant, Compare, settings and branding pages are left out. |

@@ -26,6 +26,9 @@ def main(argv=None) -> int:
                    help="your address ranges with names: cidr,name,type (default: network_map.csv in an input folder)")
     a.add_argument("--known-scanners", metavar="CSV",
                    help="sources never to flag: address,name (default: known_scanners.csv in an input folder)")
+    a.add_argument("--name", default="", help="report name, shown at the top of the report and in the Explorer")
+    a.add_argument("--description", default="",
+                   help="a few lines about the run (scope, case number), shown under the report name")
     a.add_argument("--workdir", metavar="DIR",
                    help="where temporary files go while the logs are processed (default: system temp)")
     s = sub.add_parser("serve", help="start the upload page in this computer's browser")
@@ -47,7 +50,8 @@ def main(argv=None) -> int:
         return 0
     try:
         res, paths = run(args.files, args.out, config_path=args.config, network_map=args.network_map,
-                         known_scanners=args.known_scanners, workdir=args.workdir)
+                         known_scanners=args.known_scanners, workdir=args.workdir,
+                         report={"name": args.name, "description": args.description})
     except UserError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

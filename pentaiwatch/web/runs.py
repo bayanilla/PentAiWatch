@@ -64,6 +64,18 @@ def _took(seconds) -> str:
     return f"{s // 3600} h {s // 60 % 60} min" if s >= 3600 else f"{s // 60} min {s % 60} s" if s >= 60 else f"{s} s"
 
 
+def _name(status: dict) -> str:
+    report = status.get("report") if isinstance(status.get("report"), dict) else {}
+    return str(report.get("name") or "")
+
+
+def _about(status: dict) -> str:
+    """The report name and description, as the top of a run's page."""
+    report = status.get("report") if isinstance(status.get("report"), dict) else {}
+    paras = [p for p in str(report.get("description") or "").split("\n\n") if p.strip()]
+    return "".join(f'<p class="about">{html.escape(p).replace(chr(10), "<br>")}</p>' for p in paras)
+
+
 def _plural(n: int, word: str) -> str:
     return f"{n:,} {word}{'' if n == 1 else 's'}"
 
@@ -104,36 +116,39 @@ def index(req, run_id: str):
     st = state(status, live)
     source = html.escape(str(status.get("source") or ""))
     started = _local(status.get("started"))
+    name = _name(status)
+    heading = f": {html.escape(name)}" if name else ""
+    tab = f"{name} · " if name else ""
     if st == "running":
         elapsed = app.jobs.elapsed(run_id) or 0.0
         extra = ('<p class="hint"><a href="/">Back to the upload page</a></p>'
                  '<p class="hint error" id="busy-note" role="status" aria-live="polite"></p>')
-        body = (f"<h1>Analyzing…</h1><p class=\"hint\">{source} · started {started}</p>"
+        body = (f"<h1>Analyzing{heading}</h1><p class=\"hint\">{source} · started {started}</p>"
                 + busy_overlay("Analyzing…", RUNNING_HINT, shown=True, extra=extra))
-        return req.send_page(200, page("Analyzing · PentAIWatch", body, [asset("run.js")],
+        return req.send_page(200, page(f"{tab}Analyzing · PentAIWatch", body, [asset("run.js")],
                                        {"status": f"/runs/{run_id}/status", "elapsed": round(elapsed, 1)}))
     where = (f'<p class="hint">{source} · started {started}'
              + (f" · took {_took(status.get('seconds'))}" if status.get("seconds") is not None else "")
-             + f' · saved as <code>{html.escape(run_id)}</code></p>')
+             + f' · saved as <code>{html.escape(run_id)}</code></p>' + _about(status))
     if st == "stopped":
-        body = ("<h1>The analysis stopped</h1>" + where
+        body = (f"<h1>The analysis stopped{heading}</h1>" + where
                 + "<p>It was still running when the upload page's server stopped, so it has no results. "
                   "Start it again from the upload page.</p><p><a href=\"/\">Back to the upload page</a></p>")
-        return req.send_page(200, page("Stopped · PentAIWatch", body))
+        return req.send_page(200, page(f"{tab}Stopped · PentAIWatch", body))
     if st == "failed":
-        body = ("<h1>The analysis did not finish</h1>" + where
+        body = (f"<h1>The analysis did not finish{heading}</h1>" + where
                 + f'<p class="error" role="alert"><strong>{html.escape(str(status.get("message") or ""))}</strong></p>'
                   "<p><a href=\"/\">Back to the upload page</a></p>")
-        return req.send_page(200, page("Failed · PentAIWatch", body))
-    return req.send_page(200, page("Results · PentAIWatch", _done(app, run_id, status, where)))
+        return req.send_page(200, page(f"{tab}Failed · PentAIWatch", body))
+    return req.send_page(200, page(f"{tab}Results · PentAIWatch", _done(app, run_id, status, where, heading)))
 
 
-def _done(app, run_id: str, status: dict, where: str) -> str:
+def _done(app, run_id: str, status: dict, where: str, heading: str) -> str:
     summary = status.get("summary") if isinstance(status.get("summary"), dict) else {}
     flagged = [f for f in summary.get("flagged") or [] if isinstance(f, dict)]
     out = app.run_out(run_id)
     have = lambda name: os.path.isfile(os.path.join(out, name))
-    lines = [f'<h1><img class="mark" src="{MARK}" alt="">Results</h1>', where,
+    lines = [f'<h1><img class="mark" src="{MARK}" alt="">Results{heading}</h1>', where,
              f"<p><strong>{_plural(int(summary.get('sessions') or 0), 'session')} read; "
              f"{_plural(len(flagged), 'source')} flagged.</strong></p>"]
     if flagged:
@@ -195,7 +210,8 @@ def recent_html(app) -> str:
         summary = status.get("summary") if isinstance(status.get("summary"), dict) else {}
         flagged = len(summary.get("flagged") or []) if st == "done" else None
         body.append(f'<tr><td class="when"><a href="/runs/{quote(run_id)}/">{_local(status.get("started")) or html.escape(run_id)}</a></td>'
-                    f"<td>{html.escape(str(status.get('source') or ''))}</td>"
+                    f"<td>{f'<strong>{html.escape(_name(status))}</strong><br>' if _name(status) else ''}"
+                    f"{html.escape(str(status.get('source') or ''))}</td>"
                     f'<td class="state-{st}">{STATE_TEXT[st]}</td>'
                     f"<td>{'' if flagged is None else (_plural(flagged, 'source') if flagged else 'None')}</td></tr>")
     return ("<h2>Recent reports</h2><table><thead><tr><th>Started</th><th>From</th><th>Status</th><th>Flagged</th>"

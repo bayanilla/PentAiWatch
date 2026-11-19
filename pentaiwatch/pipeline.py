@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import sys
 
-from . import __version__, config, engine, explore, netmap, resources, scanners
+from . import __version__, config, details, engine, explore, netmap, resources, scanners
 from .config import Config
 from .detect import detect
 from .errors import UserError
@@ -52,7 +52,8 @@ def input_files(paths: list[str], outdir: str) -> list[str]:
 
 def run(paths: list[str], outdir: str, cfg: Config | None = None, *, config_path: str | None = None,
         network_map: str | None = None, known_scanners: str | None = None,
-        workdir: str | None = None, internal_nets: list[str] | None = None) -> tuple[dict, dict[str, str]]:
+        workdir: str | None = None, internal_nets: list[str] | None = None,
+        report: dict | None = None) -> tuple[dict, dict[str, str]]:
     """Analyze ``paths`` (files or folders) and write the report and the Explorer into ``outdir``.
 
     Settings come from ``cfg``, else ``config_path``, else a pentaiwatch.json found in the input,
@@ -63,6 +64,8 @@ def run(paths: list[str], outdir: str, cfg: Config | None = None, *, config_path
     $PENTAIWATCH_WORKDIR); it is deleted when the run finishes.
     ``internal_nets``, typed on the upload page, replaces the settings' internal_nets; the results
     say so (``typed_settings``), and so does the report.
+    ``report`` is the optional {"name", "description"} the analyst gave the run (details.py); it is
+    shown at the top of the report and in the Explorer.
     Returns (results, {output name: path})."""
     engine.check()                                    # before any log is read
     files = input_files(paths, outdir)
@@ -123,6 +126,7 @@ def run(paths: list[str], outdir: str, cfg: Config | None = None, *, config_path
             res = {
                 "schema_version": RESULTS_SCHEMA_VERSION,
                 "tool": {"name": "PentAIWatch", "version": __version__},
+                "report": details.clean((report or {}).get("name"), (report or {}).get("description")),
                 "inputs": [{"file": s.file, "format": s.fmt, "read": s.read, "kept": s.kept,
                             "dropped": dict(s.dropped), "notes": list(s.notes)} for s in ds.stats],
                 "log_sources": ds.sensors,

@@ -108,7 +108,7 @@ class Gate(Server):
         r = self.ask("GET", "/")
         policy = r.headers["content-security-policy"]
         scripts = re.findall(r"<script>(.*?)</script>", r.body, re.S)
-        self.assertEqual(len(scripts), 2)
+        self.assertEqual(len(scripts), 3)
         for s in scripts:
             digest = base64.b64encode(hashlib.sha256(s.encode()).digest()).decode()
             self.assertIn(f"'sha256-{digest}'", policy)
@@ -251,7 +251,7 @@ class Background(Server):
         release = threading.Event()
         self.addCleanup(release.set)
 
-        def run(files, out, workdir=None, internal_nets=None):
+        def run(files, out, workdir=None, internal_nets=None, report=None):
             release.wait(30)
             os.makedirs(out)
             return {"sessions": 3, "warnings": [], "detection": {"findings": []}, "explorer": {}}, {}
@@ -349,6 +349,65 @@ class RunState(unittest.TestCase):
         self.assertEqual(runs.state({"state": "running"}, True), "running")
         self.assertEqual(runs.state({"state": "running"}, False), "stopped")
         self.assertEqual(runs.state({"state": "odd"}, True), "failed")
+
+
+class Details(Server):
+    NAME = 'DMZ <sweep> & "review"'
+
+    def test_named_folder_run(self):
+        r = self.form("/analyze-folder", {"path": self.logs(), "csrf": self.app.csrf, "report_name": self.NAME,
+                                          "report_description": "Case 42.\r\n  Asked by the SOC.\r\n\r\n\r\nSecond  part."})
+        run_id, status = self.wait(r.headers["location"])
+        self.assertEqual(status["state"], "done")
+        self.assertRegex(run_id, r"^DMZ-sweep-review_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d$")
+        md = self.ask("GET", f"/runs/{run_id}/report.md").body
+        self.assertIn(f"# PentAIWatch report\n\n**Report:** {self.NAME}\n\n> Case 42.\n> Asked by the SOC.\n\n> Second part.\n", md)
+        page = self.ask("GET", f"/runs/{run_id}/report.html").body
+        self.assertIn("<title>DMZ &lt;sweep&gt; &amp; &quot;review&quot; · PentAIWatch report</title>", page)
+        self.assertIn("<blockquote>\n<p>Case 42.</p>\n<p>Asked by the SOC.</p>\n</blockquote>", page)
+        self.assertNotIn("<sweep>", page)
+        explorer = self.ask("GET", f"/runs/{run_id}/explorer.html").body
+        self.assertIn("<title>DMZ &lt;sweep&gt; &amp; &quot;review&quot; · Explorer · PentAIWatch</title>", explorer)
+        res = json.loads(self.ask("GET", f"/runs/{run_id}/results.json").body)
+        self.assertEqual(res["report"], {"name": self.NAME, "description": "Case 42.\nAsked by the SOC.\n\nSecond part."})
+        run_page = self.ask("GET", f"/runs/{run_id}/").body
+        self.assertIn("Results: DMZ &lt;sweep&gt; &amp; &quot;review&quot;</h1>", run_page)
+        self.assertIn("Case 42.<br>Asked by the SOC.", run_page)
+        self.assertIn("<strong>DMZ &lt;sweep&gt; &amp; &quot;review&quot;</strong>", self.ask("GET", "/").body)
+
+    def test_named_upload_is_moved_to_its_named_folder(self):
+        with open(os.path.join(self.logs(), "conn.log"), "rb") as fh:
+            conn = fh.read()
+        r = self.upload([("files", "conn.log", conn)], {"report_name": "Upload one"})
+        run_id, status = self.wait(r.headers["location"])
+        self.assertEqual(status["state"], "done")
+        self.assertTrue(run_id.startswith("Upload-one_"))
+        self.assertEqual(os.listdir(self.data), [run_id])
+        self.assertTrue(os.path.isfile(os.path.join(self.data, run_id, "in", "conn.log")))
+        self.assertIn("**Report:** Upload one", self.ask("GET", f"/runs/{run_id}/report.md").body)
+
+    def test_details_are_kept_after_an_error(self):
+        r = self.form("/analyze-folder", {"path": "/no/such/folder", "csrf": self.app.csrf,
+                                          "report_name": "Keep me", "report_description": "and me"})
+        self.assertIn('value="Keep me"', r.body)
+        self.assertIn(">and me</textarea>", r.body)
+
+    def test_unnamed_runs_say_nothing(self):
+        r = self.form("/analyze-folder", {"path": self.logs(), "csrf": self.app.csrf})
+        run_id, _ = self.wait(r.headers["location"])
+        self.assertRegex(run_id, r"^[0-9a-f]{16}_")
+        md = self.ask("GET", f"/runs/{run_id}/report.md").body
+        self.assertNotIn("**Report:**", md)
+        self.assertIn("<title>PentAIWatch report</title>", self.ask("GET", f"/runs/{run_id}/report.html").body)
+
+
+class Clean(unittest.TestCase):
+    def test_clean(self):
+        from pentaiwatch import details
+        self.assertEqual(details.clean(None, None), {"name": "", "description": ""})
+        self.assertEqual(details.clean("  a \n b\t", "x\r\ny\r\rz"), {"name": "a b", "description": "x\ny\n\nz"})
+        self.assertEqual(len(details.clean("n" * 500, "d" * 5000)["name"]), details.NAME_MAX)
+        self.assertEqual(len(details.clean("n", "d" * 5000)["description"]), details.DESCRIPTION_MAX)
 
 
 class Placer(unittest.TestCase):

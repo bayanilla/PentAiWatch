@@ -41,6 +41,7 @@ import tempfile
 import zlib
 from collections import Counter
 from dataclasses import asdict
+from html import escape
 
 from . import __version__, csp
 from .config import Config
@@ -436,6 +437,8 @@ def page_data(scene: dict, res: dict) -> dict:
             # the timing settings, so the page can say what "an agent's pace" meant in this run
             "timing": (res.get("settings") or {}).get("timing") or {},
             "window_hours": (res.get("settings") or {}).get("window_hours") or 2,
+            # the analyst's report name and description, shown in the header
+            "report": res.get("report") or {"name": "", "description": ""},
             **scene}
 
 
@@ -445,6 +448,11 @@ def html(scene: dict, res: dict) -> str:
     return buf.getvalue()
 
 
+def _title(res: dict) -> str:
+    name = (res.get("report") or {}).get("name")
+    return (escape(name) + " · " if name else "") + "Explorer · PentAIWatch"
+
+
 def write_html(fh, scene: dict, res: dict) -> None:
     """Write the Explorer page: styles, the page's fixed markup, the packed data, then the scripts
     inline. It loads nothing from the network, and its policy (csp.py) lets it run these scripts
@@ -452,7 +460,7 @@ def write_html(fh, scene: dict, res: dict) -> None:
     scripts = [_read(name) for name in SCRIPTS]
     fh.write('<!doctype html>\n<html lang="en"><head><meta charset="utf-8">' + csp.meta(scripts)
              + '<meta name="viewport" content="width=device-width,initial-scale=1">'
-             '<title>Explorer · PentAIWatch</title><link rel="icon" href="data:,">'
+             f'<title>{_title(res)}</title><link rel="icon" href="data:,">'
              "<style>" + "".join(_read(name) for name in STYLES) + "</style></head><body>" + _read("explorer.html"))
     fh.write(DATA_TAG)
     write_data(fh, page_data(scene, res))

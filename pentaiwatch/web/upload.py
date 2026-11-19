@@ -10,7 +10,7 @@ import os
 import re
 import shutil
 
-from .. import resources
+from .. import details, resources
 from ..errors import UserError
 from ..pipeline import input_files
 from . import folders, multipart, runname, runs
@@ -27,6 +27,14 @@ FORM = """<h1><img class="mark" src="{mark}" alt="">Analyze logs with PentAIWatc
 outside addresses that behave like agentic, AI-driven pentest tools, and writes a report and an Explorer: a map of what
 each source swept and came back to, with a Timeline of its bursts and pauses.</p>
 {error}
+<section id="report-details" aria-labelledby="rd-title"><h2 id="rd-title">Report details <span class="hint">(optional)</span></h2>
+<label for="report_name">Report name</label>
+<input id="report_name" type="text" name="report_name" value="{report_name}" maxlength="{name_max}" placeholder="e.g. DMZ sweep review, November" autocomplete="off">
+<label for="report_description">Description</label>
+<textarea id="report_description" name="report_description" maxlength="{description_max}" rows="3" placeholder="Scope, case number, who asked for it&hellip;">{report_description}</textarea>
+<div class="hint">Shown at the top of the report and in the Explorer. The run is saved in a folder named after the report plus
+the date and time (for example <code>DMZ-sweep-review_2026-11-19_10-19-14</code>); without a name, a random name plus the date
+and time.</div></section>
 <form method="post" action="/analyze-folder" data-busy="Starting…" data-busy-hint="{start_hint}">
 <input type="hidden" name="csrf" value="{csrf}">
 <label for="path">Folder on this computer</label>
@@ -72,13 +80,17 @@ def show(req, error: str = ""):
     """GET / and every refusal of the two forms (the form keeps what was typed)."""
     app = req.app
     body = FORM.format(
-        mark=MARK, error=error_html(error), csrf=html.escape(app.csrf), path=html.escape(app.last_path),
+        mark=MARK, error=error_html(error),
+        report_name=html.escape(app.last_report.get("name", "")), name_max=details.NAME_MAX,
+        report_description=html.escape(app.last_report.get("description", "")),
+        description_max=details.DESCRIPTION_MAX, csrf=html.escape(app.csrf), path=html.escape(app.last_path),
         path_example=html.escape(folders.path_example()), nets=html.escape(app.last_nets),
         start_hint=html.escape(START_HINT), upload_hint=html.escape(UPLOAD_HINT),
         max_upload=html.escape(resources.fmt_size(app.max_upload)),
         recent=runs.recent_html(app), busy=busy_overlay())
     config = {"csrf": app.csrf, "native": folders.NATIVE_PICKER and not app.access_token}
-    req.send_page(200, page("PentAIWatch", body, [asset("busy.js"), asset("folder_picker.js")], config))
+    req.send_page(200, page("PentAIWatch", body, [asset("busy.js"), asset("folder_picker.js"), asset("details.js")],
+                            config))
 
 
 def page_view(req):
@@ -98,16 +110,21 @@ def _nets(text: str) -> list[str] | None:
     return nets or None
 
 
-def _start(req, run_id: str, files: list[str], nets: list[str] | None, source: str):
+def _report(fields: dict) -> dict:
+    return details.clean(fields.get("report_name"), fields.get("report_description"))
+
+
+def _start(req, run_id: str, files: list[str], nets: list[str] | None, source: str, report: dict):
     """Start the run in the background and open its page."""
     app = req.app
     root = app.run_root(run_id)
     try:
-        app.jobs.start(run_id, root, files, nets, source)
+        app.jobs.start(run_id, root, files, nets, source, report=report)
     except UserError as exc:
         shutil.rmtree(root, ignore_errors=True)
         return show(req, str(exc))
     app.last_path = app.last_nets = ""          # the next analysis starts with an empty form
+    app.last_report = {}
     req.redirect(f"/runs/{run_id}/")
 
 
@@ -156,6 +173,8 @@ def analyze_upload(req):
         return show(req, f"There is not enough free disk space for this upload: it is {resources.fmt_size(length)}, "
                          f"the run needs about {resources.fmt_size(DISK_RESERVE)} more to work in, and "
                          f"{resources.fmt_size(free)} is free where runs are kept ({app.data_dir}).")
+    # the report name is a field of the same upload, read after its files: the folder gets the
+    # name once the upload is in
     run_id = runname.new_run(app.data_dir)
     root = app.run_root(run_id)
     in_dir = os.path.join(root, "in")
@@ -173,7 +192,7 @@ def analyze_upload(req):
     if not app.csrf_ok(fields.get("csrf", "")):
         shutil.rmtree(root, ignore_errors=True)
         return req.send_text(403, "Forbidden")
-    app.last_nets = fields.get("internal_nets", "")
+    app.last_nets, app.last_report = fields.get("internal_nets", ""), _report(fields)
     try:
         nets = _nets(app.last_nets)
     except UserError as exc:
@@ -182,8 +201,15 @@ def analyze_upload(req):
     if not parts:
         shutil.rmtree(root, ignore_errors=True)
         return show(req, "Choose a folder of logs or at least one log file to upload.")
+    if app.last_report["name"]:
+        named = runname.new_run(app.data_dir, app.last_report["name"])
+        os.rmdir(app.run_root(named))
+        os.replace(root, app.run_root(named))
+        parts = [(field, os.path.join(app.run_root(named), os.path.relpath(path, root))) for field, path in parts]
+        run_id = named
     files = [path for _, path in parts]
-    return _start(req, run_id, files, nets, f"Upload of {len(files):,} file{'' if len(files) == 1 else 's'}")
+    return _start(req, run_id, files, nets, f"Upload of {len(files):,} file{'' if len(files) == 1 else 's'}",
+                  app.last_report)
 
 
 def analyze_folder(req):
@@ -196,7 +222,7 @@ def analyze_folder(req):
         return req.send_text(403, "Forbidden")
     raw = form.get("path", "").strip().strip('"').strip("'")
     folder = folders.resolve(raw)
-    app.last_path, app.last_nets = raw, form.get("internal_nets", "")
+    app.last_path, app.last_nets, app.last_report = raw, form.get("internal_nets", ""), _report(form)
     if not raw:
         return show(req, "Choose a folder first: click Browse… and pick one, or type its full path.")
     if not os.path.isdir(folder):
@@ -214,9 +240,9 @@ def analyze_folder(req):
         return show(req, str(exc))
     if not files:
         return show(req, f"No files found in {folder} (hidden files and the runs folder are skipped).")
-    run_id = runname.new_run(app.data_dir)
+    run_id = runname.new_run(app.data_dir, app.last_report["name"])
     in_dir = os.path.join(app.run_root(run_id), "in")
     os.makedirs(in_dir, mode=0o700)
     with open(os.path.join(in_dir, "SOURCE.txt"), "w", encoding="utf-8") as fh:
         fh.write(f"Read in place from {folder}\n" + "\n".join(files) + "\n")
-    return _start(req, run_id, files, nets, f"Folder {folder}")
+    return _start(req, run_id, files, nets, f"Folder {folder}", app.last_report)
