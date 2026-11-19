@@ -1,0 +1,115 @@
+"""Analyses started from the upload page. Each runs in a background thread, so a run of an hour
+never depends on one browser request staying open: the run's page asks how it is going and opens
+the results when it is done, and the tab can be closed meanwhile.
+
+How a run is going is kept in its folder, in STATUS.json: "running", then "done" (with a short
+summary for its page) or "failed" (with the message to show). A run that says "running" while this
+server is not running it was cut short when an earlier server stopped; its page says so.
+
+As on the command line, only ``resources.max_jobs()`` analyses run at once (one by default). The
+check is made here, under a lock, before a run is started, and ``pipeline.run`` holds its job slot
+as it always does.
+"""
+from __future__ import annotations
+
+import json
+import os
+import threading
+import time
+import traceback
+from datetime import datetime, timezone
+
+from .. import pipeline, resources
+from ..errors import UserError
+
+STATUS = "STATUS.json"
+MAX_STATUS = 1024 * 1024           # a status file is a few hundred bytes; anything larger is not ours
+FAILED = "The analysis failed; the console that started the upload page has the details."
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds") + "Z"
+
+
+def write_status(root: str, status: dict) -> None:
+    """Replace the run's STATUS.json in one step, so a reader never sees half of it."""
+    tmp = os.path.join(root, STATUS + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(status, fh)
+    os.replace(tmp, os.path.join(root, STATUS))
+
+
+def read_status(root: str) -> dict | None:
+    path = os.path.join(root, STATUS)
+    try:
+        if os.path.getsize(path) > MAX_STATUS:
+            return None
+        with open(path, encoding="utf-8") as fh:
+            status = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return status if isinstance(status, dict) and isinstance(status.get("state"), str) else None
+
+
+def summary(res: dict) -> dict:
+    """What a finished run's page shows without opening its results.json."""
+    timelines = set((res.get("explorer") or {}).get("timelines") or [])
+    return {"sessions": res["sessions"], "warnings": len(res["warnings"]),
+            "flagged": [{"source": f["source"], "level": f["level"], "label": f["label"],
+                         "hosts": len(f["hosts_hit"]), "timeline": f["source"] in timelines}
+                        for f in res["detection"]["findings"]]}
+
+
+class Jobs:
+    """The runs this server started that are still going."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._live: dict[str, float] = {}           # run id -> when it started (time.monotonic)
+
+    def running(self) -> int:
+        with self._lock:
+            return len(self._live)
+
+    def is_live(self, run_id: str) -> bool:
+        with self._lock:
+            return run_id in self._live
+
+    def elapsed(self, run_id: str) -> float | None:
+        with self._lock:
+            started = self._live.get(run_id)
+        return None if started is None else time.monotonic() - started
+
+    def start(self, run_id: str, root: str, files: list[str], internal_nets: list[str] | None, source: str,
+              run=None) -> None:
+        """Start analyzing ``files`` into ``root``/out in the background. Raises BusyError when as
+        many analyses as may run at once are already running. ``run`` stands in for pipeline.run
+        (tests)."""
+        with self._lock:
+            if len(self._live) >= resources.max_jobs() or resources.busy():
+                raise resources.BusyError("Another analysis is already running on this computer. Wait for it to "
+                                          "finish and try again; the upload page lists it under Recent reports.")
+            write_status(root, {"state": "running", "started": _now(), "source": source, "files": len(files)})
+            self._live[run_id] = time.monotonic()
+        thread = threading.Thread(target=self._run, name=f"pentaiwatch-run-{run_id}", daemon=True,
+                                  args=(run_id, root, files, internal_nets, run or pipeline.run))
+        thread.start()
+
+    def _run(self, run_id: str, root: str, files: list[str], internal_nets, run) -> None:
+        status = read_status(root) or {}
+        began = time.monotonic()
+        try:
+            res, _ = run(files, os.path.join(root, "out"), workdir=root, internal_nets=internal_nets)
+            status.update(state="done", summary=summary(res))
+        except UserError as exc:
+            status.update(state="failed", message=str(exc))
+        except Exception:
+            traceback.print_exc()          # the run folder is kept for a look at what went wrong
+            status.update(state="failed", message=FAILED)
+        finally:
+            status.update(finished=_now(), seconds=round(time.monotonic() - began, 1))
+            try:
+                write_status(root, status)
+            finally:
+                with self._lock:
+                    self._live.pop(run_id, None)

@@ -1,4 +1,5 @@
-"""Command line: ``python -m pentaiwatch analyze <folder or files> -o <output folder>``."""
+"""Command line: ``python -m pentaiwatch analyze <folder or files> -o <output folder>``, or
+``python -m pentaiwatch serve`` for the upload page."""
 from __future__ import annotations
 
 import argparse
@@ -27,7 +28,23 @@ def main(argv=None) -> int:
                    help="sources never to flag: address,name (default: known_scanners.csv in an input folder)")
     a.add_argument("--workdir", metavar="DIR",
                    help="where temporary files go while the logs are processed (default: system temp)")
+    s = sub.add_parser("serve", help="start the upload page in this computer's browser")
+    s.add_argument("--host", default="127.0.0.1",
+                   help="address to listen on (default 127.0.0.1: this computer only)")
+    s.add_argument("--port", type=int, help="port (default 8770, or the next free one)")
+    s.add_argument("--allow-remote", action="store_true",
+                   help="allow a --host other computers can reach; every request then needs a printed access token")
+    s.add_argument("--data-dir", default="pentaiwatch_runs",
+                   help="where each run's uploads and results are kept (default pentaiwatch_runs)")
+    s.add_argument("--max-upload-gb", type=float, default=20, help="largest upload in GB (default 20)")
+    s.add_argument("--open", action="store_true", help="open the page in the default browser")
     args = ap.parse_args(argv)
+    if args.cmd == "serve":
+        from .web.server import serve
+        if args.max_upload_gb <= 0:
+            ap.error("--max-upload-gb must be more than 0")
+        serve(args.host, args.port, args.data_dir, int(args.max_upload_gb * 1024 ** 3), args.allow_remote, args.open)
+        return 0
     try:
         res, paths = run(args.files, args.out, config_path=args.config, network_map=args.network_map,
                          known_scanners=args.known_scanners, workdir=args.workdir)

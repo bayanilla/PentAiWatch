@@ -1,0 +1,58 @@
+/* The upload page and a run's page. Light like the report, and VulnScope MAX's Graphite look when the
+   system is dark, as the Explorer is. Forms, the folder picker and the "working" overlay follow MAX's
+   forms.css (6a7ac93). */
+:root{--bg:#f6f7f9;--fg:#1c2330;--muted:#5b6472;--line:#d5d9e0;--panel:#fff;--code:#eceff3;--link:#1558b0;
+--accent:#1b7f91;--on-accent:#fff;--bad:#b3261e;--ok:#1d7a45;--l1:#b8641d;--t0:#8f6f12;--r:4px;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#111214;--fg:#e6e6e3;--muted:#a0a19d;--line:#2b2d31;--panel:#17181b;
+--code:#1e2024;--link:#7db4f5;--accent:#45b0c2;--on-accent:#0b1416;--bad:#ff8a7e;--ok:#6fcf97;--l1:#d98845;--t0:#c9a544;
+color-scheme:dark}}
+*{box-sizing:border-box}
+body{font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--fg);background:var(--bg);margin:0}
+main{max-width:980px;margin:0 auto;padding:28px 20px 60px}
+h1{font-size:26px;margin:0 0 12px;display:flex;align-items:center;gap:10px}
+h1 .mark{width:26px;height:26px}
+h2{font-size:20px;margin:32px 0 10px;border-bottom:1px solid var(--line);padding-bottom:6px}
+a{color:var(--link)} code{background:var(--code);padding:1px 4px;border-radius:3px;overflow-wrap:anywhere}
+.hint{color:var(--muted);font-size:.9rem}
+.error{color:var(--bad)}
+form{border:1px solid var(--line);border-radius:var(--r);background:var(--panel);padding:16px;margin:16px 0}
+label{display:block;font-weight:600;margin:14px 0 4px}
+form>label:first-of-type{margin-top:0}
+input[type=text]{width:100%;max-width:520px;padding:6px 8px;font:inherit;color:var(--fg);background:var(--bg);
+border:1px solid var(--line);border-radius:var(--r)}
+input[type=file]{font:inherit;color:var(--fg)}
+button{margin-top:18px;padding:8px 18px;font:inherit;font-size:1rem;cursor:pointer;color:var(--on-accent);
+background:var(--accent);border:1px solid var(--accent);border-radius:var(--r)}
+button.secondary{background:transparent;color:var(--fg);border:1px solid var(--line)}
+button:disabled{opacity:.5;cursor:not-allowed}
+.pathrow{display:flex;gap:8px;max-width:640px;align-items:center} .pathrow input{flex:1;max-width:none}
+.pathrow button{margin-top:0;white-space:nowrap}
+.btnrow{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+#picker{max-width:640px;margin-top:8px;border:1px solid var(--line);border-radius:var(--r);padding:10px;background:var(--bg)}
+#picker[hidden]{display:none}
+.pk-head,.pk-foot{display:flex;gap:8px;align-items:center}
+.pk-head button,.pk-foot button{margin-top:0;padding:4px 12px;font-size:.9rem;white-space:nowrap}
+.pk-foot{margin-top:8px} .pk-foot span{flex:1} #pk-where{overflow-wrap:anywhere}
+#pk-list{list-style:none;margin:8px 0 0;padding:0;max-height:280px;overflow:auto;border-top:1px solid var(--line)}
+#pk-list li{padding:5px 8px;cursor:pointer;border-bottom:1px solid var(--line)}
+#pk-list li:hover,#pk-list li:focus{background:rgba(127,127,127,.15);outline:none}
+#pk-list li::before{content:"\1F4C1\00a0\00a0"}
+table{border-collapse:collapse;width:100%;margin:8px 0 14px;background:var(--panel)}
+td,th{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}
+th{background:var(--code)} td.when{white-space:nowrap}
+.state-done{color:var(--ok)} .state-failed,.state-stopped{color:var(--bad)} .state-running{color:var(--accent)}
+.level{font-weight:600;color:var(--l1)} .level.t0{color:var(--t0)}
+ul.flagged{padding-left:20px} ul.flagged li{margin:4px 0}
+p.open a{font-weight:600}
+#busy[hidden]{display:none}
+#busy{position:fixed;inset:0;z-index:2000;display:flex;align-items:center;justify-content:center;background:#000a;
+backdrop-filter:blur(2px)}
+.busy-card{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:var(--r);padding:28px 36px;
+text-align:center;min-width:280px;max-width:min(560px,90vw);box-shadow:0 18px 48px #0008}
+.busy-stage{perspective:600px;height:112px;display:flex;align-items:center;justify-content:center;margin-bottom:12px}
+.busy-logo{height:96px;width:96px;animation:busy-spin 2.4s linear infinite;transform-style:preserve-3d}
+.busy-title{font-size:1.15rem;font-weight:700;margin:0} .busy-time{font-variant-numeric:tabular-nums}
+.busy-card .hint{margin:6px 0 0} .busy-card .hint[hidden]{display:none}
+@keyframes busy-spin{from{transform:rotateY(0deg)}to{transform:rotateY(360deg)}}
+@media (prefers-reduced-motion:reduce){.busy-logo{animation:busy-pulse 2s ease-in-out infinite}
+@keyframes busy-pulse{50%{opacity:.55}}}
