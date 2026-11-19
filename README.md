@@ -233,6 +233,20 @@ more than `rotation.max_service_sources` (20) outside addresses used in the look
 as a web site, so new visitors to it never tie addresses together. A campaign whose sweep is itself
 split across proxies is not tied together yet.
 
+### Your hosts reaching out to attacker infrastructure
+
+Inbound traffic shows an attack; a host of yours reaching out to the attacker's own servers can
+mean it worked. Any session from an internal host to an address on the bundled list or your
+`known_bad.csv` is flagged, with the host, the address, what the list says about it, the ports, how
+many sessions it answered and when. These come first in the report.
+
+Censys found Cobalt Strike (port 50050) and Adaptix C2 (port 4321) on ARTEX hosts. A session from
+an internal host to any other outside address on one of those ports is named as a hint, under
+`outbound.c2_ports`, and flags nothing: anything can listen on a port. The ARTEX console's own
+ports (8787, 18080, 8081, 18899) are left out because ordinary services use them too. Set
+`"outbound": {"check": false}` to skip all of this. A destination on the allowlist or in
+`known_scanners.csv` is left out, as it is for sources.
+
 ### Named targets
 
 The ARTEX and CyberStrikeAI reporting says what the agents went for: FortiGate and other firewall
@@ -307,6 +321,13 @@ first is used, a warning names the others, and `--config` settles it.
   "rotation": {
     "min_joiners": 2,
     "max_service_sources": 20
+  },
+  "outbound": {
+    "check": true,
+    "c2_ports": {
+      "Cobalt Strike teamserver": [50050],
+      "Adaptix C2": [4321]
+    }
   },
   "targets": {
     "Edge device admin or VPN": [541, 4443, 8443, 9443, 10443],
@@ -449,8 +470,10 @@ VulnScope MAX's does:
 - **Timing sees connection starts, nothing inside a connection.** A tool that sends many requests
   over one connection it keeps open, or runs several jobs at once from one address, shows fewer
   pauses and can go unflagged.
-- **Inbound only.** Outside sources towards internal hosts. Activity between internal hosts and
-  outbound traffic from a compromised host are not looked at.
+- **Inbound behaviour, outbound by address.** The behaviour signals score outside sources
+  towards internal hosts. Outbound, only sessions to published attacker addresses (flagged) and
+  to command-and-control ports (hints) are looked at; an agent's other traffic out, such as calls
+  to an LLM API, and activity between internal hosts are not.
 - **Not flagged does not mean cleared.** Only connection metadata is read.
 - **Threat logs are read, not scored yet.** Palo Alto threat rows are counted in the report. They
   do not raise or lower a finding until the threat-log levels are built.

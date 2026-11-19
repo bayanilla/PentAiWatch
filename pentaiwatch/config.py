@@ -132,6 +132,20 @@ class Rotation:
     max_service_sources: int = 20
 
 
+@dataclass
+class Outbound:
+    """Your hosts reaching out to attacker infrastructure. Inbound traffic shows the attack;
+    outbound shows whether it worked. An internal host with a session to an address on a list of
+    published attacker addresses is flagged (the bundled list and your known_bad.csv). A session out
+    to a command-and-control port below, to any outside address, is named as a hint: these ports
+    are the defaults of the tools the reporting found on ARTEX hosts, but anything can listen on
+    them, so a hint never flags on its own."""
+    check: bool = True
+    c2_ports: dict[str, list[int]] = field(
+        default_factory=lambda: {"Cobalt Strike teamserver": [50050], "Adaptix C2": [4321]},
+        metadata={"kind": "targets"})
+
+
 # Kinds of service the ARTEX and CyberStrikeAI reporting names as what the agents went for, by TCP or
 # UDP port. A flagged source's services on these ports are named in the report; they do not change
 # whether it is flagged. Port 443 is left out: too much else answers on it to name anything.
@@ -231,6 +245,7 @@ class Config:
     spray: Spray = field(default_factory=Spray)
     parallel: Parallel = field(default_factory=Parallel)
     rotation: Rotation = field(default_factory=Rotation)
+    outbound: Outbound = field(default_factory=Outbound)
     # Named kinds of target: name -> ports. Your names are added; giving a default name replaces its
     # ports, and an empty list drops it.
     targets: dict[str, list[int]] = field(
@@ -397,6 +412,10 @@ def check(cfg: Config, name: str = "settings") -> None:
     if pa.answered_min_bytes_received < 1:
         raise UserError(f"{name}: paloalto.answered_min_bytes_received must be 1 or more: a session with "
                         "nothing back was not answered")
+    for label, ports in cfg.outbound.c2_ports.items():
+        for port in ports:
+            if not 1 <= port <= 65535:
+                raise UserError(f"{name}: outbound.c2_ports.{label}: {port} is not a port number (1 to 65535)")
     seen: dict[int, str] = {}
     for label, ports in cfg.targets.items():
         for port in ports:

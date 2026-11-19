@@ -75,7 +75,9 @@ EXPECTED = {
     # (10.128.0.248, up to 179 a minute) and web and VNC ports on several hosts (10.164.94.120, up to
     # 411 a minute). That is the brute force the spray signal is for. Nothing is on the published
     # address lists, nothing keeps a machine-steady gap, and no sweep is followed by new addresses.
-    "other_signals": {"known": [], "steady": [], "spray": ["10.128.0.248", "10.164.94.120"], "rotation": []},
+    # No competition host reached a published attacker address or a command-and-control port out.
+    "other_signals": {"known": [], "steady": [], "spray": ["10.128.0.248", "10.164.94.120"], "rotation": [],
+                      "outbound": [], "c2_hints": []},
     # with the synthetic agent added: [source, level], the same from every form of the log
     "with_agent_flagged": [[sample.AGENT, 1]],
     # Whole-second firewall times make 713 rows the same as another row (same second, addresses,
@@ -199,7 +201,9 @@ def summary(res: dict) -> dict:
             "other_signals": {"known": sorted(k["source"] for k in d.get("known_sources") or []),
                               "steady": sorted(v["source"] for v in d.get("steady_sources") or []),
                               "spray": sorted(v["source"] for v in d.get("spray_sources") or []),
-                              "rotation": sorted(g["sweeper"] for g in d.get("rotations") or [])}}
+                              "rotation": sorted(g["sweeper"] for g in d.get("rotations") or []),
+                              "outbound": sorted(c["host"] for c in d.get("outbound_contacts") or []),
+                              "c2_hints": sorted(h["host"] for h in d.get("c2_hints") or [])}}
 
 
 def drawn_pace(res: dict, source: str) -> dict | None:
@@ -272,7 +276,7 @@ def main(data: str, work: str) -> int:
                    drawn_timeline(runs["zeek_tsv"], NMAP)))
     checks.append(("Zeek: flagged in the capture itself", EXPECTED["flagged"], got["zeek_tsv"]["flagged"]))
     for name in ("zeek_tsv", "zeek_json", "zeek_with_agent", "paloalto_with_agent", "both_with_agent"):
-        checks.append((f"{name}: published addresses, steady, spray and rotating sources",
+        checks.append((f"{name}: published addresses, steady, spray, rotating sources and outbound",
                        EXPECTED["other_signals"], got[name]["other_signals"]))
     for name in ("zeek_with_agent", "paloalto_with_agent", "both_with_agent"):
         checks.append((f"{name}: flagged, with the level", EXPECTED["with_agent_flagged"], got[name]["flagged"]))
