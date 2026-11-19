@@ -153,6 +153,33 @@ def _rotation_lines(rotations: list[dict], st: dict) -> list[str]:
     return lines + [""]
 
 
+def _spray_run(r: dict) -> str:
+    kind = f" ({r['target']})" if r.get("target") else ""
+    return (f"{r['service']}{kind}: {r['sessions']:,} sessions in {r['minutes']:,} minutes at "
+            f"{r['peak_per_minute']:,} a minute at the peak, {r['answered']:,} completed, {_when(r['first'])} to "
+            f"{_when(r['last'])}")
+
+
+def _spray_lines(spray: list[dict], st: dict) -> list[str]:
+    """The sources flagged for a high-rate login spray alone."""
+    if not spray:
+        return []
+    s = st["spray"]
+    lines = ["### High-rate login spray", "",
+             f"{_n(len(spray), 'outside source')} sent {s['min_per_minute']}+ sessions a minute to one service in "
+             f"{s['min_minutes']}+ minutes, and {s['min_answered_share']:.0%}+ of them completed. A password spray "
+             "against a VPN portal, webmail or remote access looks like this (Microsoft saw up to 2,900 failed "
+             "logins a minute from one Storm-0940 address). The connections show how hard it hit, not whether a "
+             "login worked: check that service's own log for the failures. A busy integration can look the "
+             "same, so list the ones you expect in known_scanners.csv.", "",
+             "| Source | Built from | Services |", "|---|---|---|"]
+    for v in spray:
+        more = f"; and {v['runs_total'] - len(v['runs']):,} more" if v["runs_total"] > len(v["runs"]) else ""
+        lines.append(f"| {v['source']} | {_all([SOURCE_TEXT.get(x, x) for x in v['log_sources']])} | "
+                     f"{'; '.join(_spray_run(r) for r in v['runs'])}{more} |")
+    return lines + [""]
+
+
 def _steady_lines(steady: list[dict], st: dict) -> list[str]:
     """The sources flagged for machine-steady repetition alone."""
     if not steady:
@@ -240,6 +267,8 @@ def _finding_lines(f: dict, st: dict, map_file: str = "", timeline: bool = False
         lines.append(f"| Published attacker address | {_published(f['known'])} |")
     if f.get("steady"):
         lines.append(f"| Machine-steady repetition | {'; '.join(_steady_run(r) for r in f['steady'])} |")
+    if f.get("spray"):
+        lines.append(f"| High-rate login spray | {'; '.join(_spray_run(r) for r in f['spray'])} |")
     if f.get("notes"):
         lines.append(f"| Notes | {' '.join(f['notes'])} |")
     if map_file:
@@ -317,6 +346,7 @@ def markdown(res: dict) -> str:
     lines += _rotation_lines(rotations, st)
     lines += _known_lines(det.get("known_sources") or [])
     lines += _steady_lines(det.get("steady_sources") or [], st)
+    lines += _spray_lines(det.get("spray_sources") or [], st)
     if map_file:
         replay = (" Its Timeline replays a source's sessions in the order they started, with its bursts and "
                   "pauses." if ex.get("timelines") else "")
@@ -333,6 +363,8 @@ def markdown(res: dict) -> str:
               "looked like. The list says who published it and how sure they were.",
               "- **Machine-steady repetition.** A source that hit one service over and over at an almost "
               "constant gap, as a scripted login brute force does, is flagged on its own.",
+              "- **High-rate login spray.** A source that sent a flood of completed connections to one service, "
+              "minute after minute, as a password spray does, is flagged on its own.",
               "- **Several attack paths at once** raises confidence in a Level 1 or Tier 0 finding: once it "
               "narrowed, the source's bursts worked more than one service, taking turns between them, as an "
               "agent running attack paths side by side does. It never flags a source on its own.",
@@ -385,6 +417,9 @@ def markdown(res: dict) -> str:
               f"- Machine-steady repetition: {st['steady']['min_sessions']}+ sessions in a row to one service, each "
               f"within {st['steady']['max_gap_seconds']:g} seconds of the last, gaps varying by at most "
               f"{st['steady']['max_jitter']:.0%} of their mean.",
+              f"- High-rate login spray: {st['spray']['min_per_minute']}+ sessions a minute to one TCP service in "
+              f"{st['spray']['min_minutes']}+ minutes, {st['spray']['min_answered_share']:.0%}+ completed; services "
+              f"more than {st['spray']['max_service_sources']} outside addresses used never count.",
               f"- Several attack paths at once: {st['parallel']['min_bursts']}+ bursts after narrowing, each working "
               f"{st['parallel']['min_services']}+ services and going back to one it left.",
               f"- Rotating sources: {st['rotation']['min_joiners']}+ new addresses whose first session is between "
