@@ -67,7 +67,9 @@ def main(argv=None) -> int:
     rotations = res["detection"].get("rotations") or []
     total = len({x["source"] for x in found + known + steady + spray}
                 | {ip for g in rotations for ip in [g["sweeper"]] + [j["source"] for j in g["joiners"]]})
-    print(f"{res['sessions']:,} sessions read; {total} source{'' if total == 1 else 's'} flagged.")
+    reached = len({c["host"] for c in res["detection"].get("outbound_contacts") or []})
+    print(f"{res['sessions']:,} sessions read; {total} source{'' if total == 1 else 's'} flagged"
+          + (f"; {reached} internal host{'' if reached == 1 else 's'} reached attacker addresses." if reached else "."))
     for f in found:
         tier = "tier 0" if f["level"] == 0 else f"level {f['level']}"
         hosts = len(f["hosts_hit"])
@@ -88,6 +90,12 @@ def main(argv=None) -> int:
     for g in rotations:
         print(f"  {g['sweeper']}  rotating sources: {', '.join(j['source'] for j in g['joiners'])} came back to "
               "what it swept")
+    for c in res["detection"].get("outbound_contacts") or []:
+        print(f"  {c['host']}  reached attacker address {c['destination']}: {c['name'] or 'listed'}  "
+              f"({c['sessions']} sessions, {c['answered']} answered)")
+    hints = res["detection"].get("c2_hints") or []
+    if hints:
+        print(f"  {len(hints)} outbound session group(s) to command-and-control ports (hints, see the report)")
     print(f"Report:   {paths['report.html']}")
     print(f"Explorer: {paths['explorer.html']}")
     return 0

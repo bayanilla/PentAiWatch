@@ -72,7 +72,11 @@ def summary(res: dict) -> dict:
                            "hosts": len({r["service"].split(":")[0] for r in v["runs"]}),
                            "timeline": False, "tag": "Login spray"}
                           for v in res["detection"].get("spray_sources") or []]
-                       + _rotation_entries(res)}
+                       + _rotation_entries(res)
+                       + [{"source": c["host"], "level": None, "label": f"reached {c['destination']} "
+                           f"({c['name'] or 'published address'}), {c['sessions']:,} sessions",
+                           "hosts": 1, "timeline": False, "tag": "Reached attacker"}
+                          for c in res["detection"].get("outbound_contacts") or []]}
 
 
 def _rotation_entries(res: dict) -> list[dict]:

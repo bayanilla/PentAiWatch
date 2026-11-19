@@ -7,6 +7,9 @@ the warnings a reader needs to judge them.
 How it works, in order:
 
 1. ``_classify_addresses``  which addresses are internal, and which sources are allowlisted.
+1b. ``_outbound``           internal hosts with sessions OUT to a published attacker address
+                            (flagged) or to a command-and-control port on any other outside
+                            address (a hint only). Everything after this reads inbound sessions.
 2. ``_common_sessions``     inbound sessions (outside source -> internal host) inside the lookback,
                             in ONE shape whatever sensor logged them: start time, how that time
                             was found, and an outcome of failed / answered / other. Every signal
@@ -220,6 +223,41 @@ class SpraySource:
 
 
 @dataclass
+class OutboundContact:
+    """An internal host that had sessions out to a published attacker address."""
+    host: str
+    network: str                 # name from network_map.csv, '' when unmapped
+    destination: str
+    name: str                    # what the list says about the destination
+    confidence: str
+    reference: str
+    list_name: str
+    sessions: int
+    answered: int                # sessions the destination answered
+    ports: list[str]             # "port/proto", most sessions first (capped)
+    first: str
+    last: str
+    log_sources: list[str]
+    c2: list[str] = field(default_factory=list)   # command-and-control port names among those ports
+
+
+@dataclass
+class C2Hint:
+    """An internal host's sessions out to a command-and-control port on an outside address that is
+    not on a published list. A hint only: it never flags."""
+    host: str
+    network: str
+    destination: str
+    port: int
+    tool: str                    # whose default port it is
+    sessions: int
+    answered: int
+    first: str
+    last: str
+    log_sources: list[str]
+
+
+@dataclass
 class SteadySource:
     """A source whose only evidence is machine-steady repetition (it was not flagged otherwise)."""
     source: str
@@ -255,6 +293,8 @@ class Detection:
     steady_sources: list[SteadySource] = field(default_factory=list)
     spray_sources: list[SpraySource] = field(default_factory=list)
     rotations: list[Rotation] = field(default_factory=list)
+    outbound_contacts: list[OutboundContact] = field(default_factory=list)
+    c2_hints: list[C2Hint] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     lookback_start: str | None = None
     lookback_end: str | None = None
@@ -273,7 +313,7 @@ class Detection:
 
 
 SCORING_TABLES = ("pw_ip", "pw_sessions", "pw_svc", "pw_probe", "pw_narrow_svc", "pw_narrow", "pw_burst",
-                  "pw_timing", "pw_pace", "pw_sweep")
+                  "pw_timing", "pw_pace", "pw_sweep", "pw_out")
 
 
 def detect(con, cfg: Config, *, while_scored=None) -> Detection:
@@ -303,6 +343,8 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
     nm = NetMap(cfg.networks)
     try:
         bad = _classify_addresses(con, cfg)
+        if cfg.outbound.check:
+            out.outbound_contacts, out.c2_hints = _outbound(con, cfg, bad, start, nm)
         _common_sessions(con, cfg, start)
         out.inbound_sessions, out.outside_sources = con.execute(
             "SELECT count(*), count(DISTINCT src_ip) FROM pw_sessions").fetchone()
@@ -398,6 +440,59 @@ def _classify_addresses(con, cfg: Config) -> dict[str, dict]:
 
 def _allowed(con) -> set[str]:
     return {r[0] for r in con.execute("SELECT ip FROM pw_ip WHERE allowed").fetchall()}
+
+
+# -- 1b. your hosts reaching out to attacker infrastructure ----------------------------------
+MAX_OUTBOUND_PORTS = 10
+
+
+def _outbound(con, cfg: Config, bad: dict[str, dict], start: datetime,
+              nm: NetMap) -> tuple[list[OutboundContact], list[C2Hint]]:
+    """Sessions since ``start`` from an internal host to an outside address: per (host, address),
+    those to a published attacker address, and per (host, address, port) those to a command-and-
+    control port (``outbound.c2_ports``) on any other outside address. A destination on the
+    allowlist or in known_scanners.csv is left out, as it is for sources."""
+    c2 = {port: tool for tool, ports in cfg.outbound.c2_ports.items() for port in ports}
+    args = {"zeek_failed": list(cfg.probing.zeek_failed_states),
+            "zeek_answered": list(cfg.narrowing.zeek_answered_states),
+            "zeek_icmp": bool(cfg.probing.zeek_icmp_by_reply),
+            "pa_failed_packets": int(cfg.paloalto.failed_max_packets_received),
+            "pa_answered_bytes": int(cfg.paloalto.answered_min_bytes_received), "start": start}
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE pw_out AS
+        SELECT f.src_ip AS host, f.dst_ip AS dest, f.dst_port, f.proto, f.ts, f.sensor,
+               {_OUTCOME_SQL} AS outcome
+        FROM flows f JOIN pw_ip s ON s.ip = f.src_ip JOIN pw_ip d ON d.ip = f.dst_ip
+        WHERE s.internal AND NOT d.internal AND NOT d.allowed AND f.ts IS NOT NULL AND f.ts >= $start
+          AND (list_contains($bad, f.dst_ip) OR (f.proto = 'tcp' AND list_contains($c2, f.dst_port)))""",
+                {**args, "bad": sorted(bad), "c2": sorted(c2)})
+    contacts = []
+    for host, dest, n, answered, first, last, sensors in con.execute("""
+            SELECT host, dest, count(*), count(*) FILTER (outcome = 'answered'), min(ts), max(ts), list(DISTINCT sensor)
+            FROM pw_out WHERE list_contains($bad, dest) GROUP BY ALL ORDER BY host, dest""",
+                                                                       {"bad": sorted(bad)}).fetchall():
+        ports = con.execute("""
+            SELECT dst_port, proto, count(*) AS n FROM pw_out WHERE host = ? AND dest = ?
+            GROUP BY ALL ORDER BY n DESC, dst_port""", [host, dest]).fetchall()
+        entry = bad[dest]
+        contacts.append(OutboundContact(
+            host=host, network=nm.name(host), destination=dest, name=entry["name"], confidence=entry["confidence"],
+            reference=entry["reference"], list_name=entry["list_name"], sessions=int(n), answered=int(answered),
+            ports=[f"{p}/{pr}" if p is not None else pr for p, pr, _ in ports[:MAX_OUTBOUND_PORTS]],
+            first=_iso(first), last=_iso(last), log_sources=sorted(sensors),
+            c2=list(dict.fromkeys(c2[p] for p, pr, _ in ports if pr == "tcp" and p in c2))))
+    hints = [C2Hint(host=host, network=nm.name(host), destination=dest, port=int(port), tool=c2[port],
+                    sessions=int(n), answered=int(answered), first=_iso(first), last=_iso(last),
+                    log_sources=sorted(sensors))
+             for host, dest, port, n, answered, first, last, sensors in con.execute("""
+                SELECT host, dest, dst_port, count(*), count(*) FILTER (outcome = 'answered'), min(ts), max(ts),
+                       list(DISTINCT sensor)
+                FROM pw_out WHERE proto = 'tcp' AND list_contains($c2, dst_port) AND NOT list_contains($bad, dest)
+                GROUP BY ALL ORDER BY host, dest, dst_port""", {"c2": sorted(c2), "bad": sorted(bad)}).fetchall()]
+    rank = {c: i for i, c in enumerate(("high", "medium", "low", ""))}
+    contacts.sort(key=lambda c: (rank.get(c.confidence, 3), -c.answered, -c.sessions, c.host, c.destination))
+    hints.sort(key=lambda h: (-h.answered, -h.sessions, h.host, h.destination))
+    return contacts, hints
 
 
 # -- 2. the common session shape ------------------------------------------------------------

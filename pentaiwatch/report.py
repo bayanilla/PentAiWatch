@@ -74,6 +74,43 @@ def _published(k: dict) -> str:
     return f"{_cell(k['name']) or 'listed'} ({_cell(k['list_name'])}{conf}){ref}"
 
 
+def _host(item: dict) -> str:
+    return f"{item['host']} ({_cell(item['network'])})" if item.get("network") else item["host"]
+
+
+def _outbound_lines(contacts: list[dict], hints: list[dict]) -> list[str]:
+    """Your hosts reaching out to attacker infrastructure: the contacts (flagged) and the
+    command-and-control port hints (not flagged)."""
+    if not contacts and not hints:
+        return []
+    lines = ["## Your hosts reaching out to attacker infrastructure", ""]
+    if contacts:
+        hosts = len({c["host"] for c in contacts})
+        lines += [f"{_n(hosts, 'internal host')} had sessions out to an address published for ARTEX or "
+                  "CyberStrikeAI activity (or listed in your known_bad.csv). Inbound traffic shows an attack; a host "
+                  "of yours reaching out to the attacker's own servers can mean it worked, so check these hosts "
+                  "first. Answered means the address replied.", "",
+                  "| Internal host | Contacted | Published as | Sessions | Ports | Seen | Built from |",
+                  "|---|---|---|---|---|---|---|"]
+        for c in contacts:
+            c2 = f" ({', '.join(c['c2'])} port)" if c.get("c2") else ""
+            lines.append(f"| {_host(c)} | {c['destination']} | {_published(c)} | {c['sessions']:,} "
+                         f"({c['answered']:,} answered) | {', '.join(c['ports'])}{c2} | {_when(c['first'])} to "
+                         f"{_when(c['last'])} | {_all([SOURCE_TEXT.get(x, x) for x in c['log_sources']])} |")
+        lines.append("")
+    if hints:
+        lines += ["### Command-and-control ports (hints, not flagged)", "",
+                  f"{_n(len({h['host'] for h in hints}), 'internal host')} had sessions out to an outside address on "
+                  "the default port of a command-and-control tool found on ARTEX hosts. Anything can listen on "
+                  "these ports, so this flags nothing on its own: look at what the address is.", "",
+                  "| Internal host | Contacted | Port | Default port of | Sessions | Seen |", "|---|---|---|---|---|---|"]
+        for h in hints:
+            lines.append(f"| {_host(h)} | {h['destination']} | {h['port']}/tcp | {_cell(h['tool'])} | "
+                         f"{h['sessions']:,} ({h['answered']:,} answered) | {_when(h['first'])} to {_when(h['last'])} |")
+        lines.append("")
+    return lines
+
+
 def _read_from(files: list[dict]) -> str:
     """The first line under "Settings used": which settings, network map and known-scanner files
     this run read, and which of them it found among the input files without being given them."""
@@ -199,6 +236,15 @@ def _steady_lines(steady: list[dict], st: dict) -> list[str]:
     return lines + [""]
 
 
+def _outbound_line(st: dict) -> str:
+    o = st.get("outbound") or {}
+    if not o.get("check", True):
+        return "- Outbound: not checked (outbound.check is false)."
+    ports = "; ".join(f"{name} ({', '.join(str(p) for p in ports)})" for name, ports in o.get("c2_ports", {}).items())
+    return ("- Outbound: internal hosts' sessions to published attacker addresses are flagged; command-and-control "
+            f"ports named as hints: {ports or 'none'}.")
+
+
 def _targets_line(st: dict) -> str:
     named = "; ".join(f"{name} (port{'s' if len(ports) > 1 else ''} {', '.join(str(p) for p in sorted(ports))})"
                       for name, ports in st.get("targets", {}).items())
@@ -313,6 +359,7 @@ def markdown(res: dict) -> str:
         lines += [f"Left out of the scoring: {_n(det['never_flagged_sessions'], 'session')} from "
                   f"{_n(det['never_flagged_sources'], 'outside source')} on the allowlist or in "
                   "known_scanners.csv. The ranges are listed under Settings used.", ""]
+    lines += _outbound_lines(det.get("outbound_contacts") or [], det.get("c2_hints") or [])
     lines += ["## Agentic activity", ""]
     # the Explorer page written next to the report, if any: {"file", "sources_drawn", "findings_drawn",
     # "timelines": the sources whose Timeline is in the page}
@@ -365,6 +412,9 @@ def markdown(res: dict) -> str:
               "constant gap, as a scripted login brute force does, is flagged on its own.",
               "- **High-rate login spray.** A source that sent a flood of completed connections to one service, "
               "minute after minute, as a password spray does, is flagged on its own.",
+              "- **Reaching out to attacker infrastructure.** An internal host with sessions out to a published "
+              "attacker address is flagged; it can mean an attack worked. Sessions out to a command-and-control "
+              "tool's default port are named as a hint and flag nothing.",
               "- **Several attack paths at once** raises confidence in a Level 1 or Tier 0 finding: once it "
               "narrowed, the source's bursts worked more than one service, taking turns between them, as an "
               "agent running attack paths side by side does. It never flags a source on its own.",
@@ -427,6 +477,7 @@ def markdown(res: dict) -> str:
               f"{st['narrowing']['min_sessions_per_service']}+ completed sessions to a service it found and "
               f"{st['narrowing']['min_focus_share']:.0%}+ of their sessions to those services; services more than "
               f"{st['rotation']['max_service_sources']} outside addresses used never count.",
+              _outbound_line(st),
               _targets_line(st),
               f"- Never flagged: {', '.join(st['allowlist'] + [k['cidr'] for k in res['known_scanners']]) or 'nothing listed'}."
               + (f" That left out {_n(det['never_flagged_sources'], 'outside source')} with "
