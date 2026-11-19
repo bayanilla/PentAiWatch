@@ -151,13 +151,14 @@ def _done(app, run_id: str, status: dict, where: str, heading: str) -> str:
     have = lambda name: os.path.isfile(os.path.join(out, name))
     lines = [f'<h1><img class="mark" src="{MARK}" alt="">Results{heading}</h1>', where,
              f"<p><strong>{_plural(int(summary.get('sessions') or 0), 'session')} read; "
-             f"{_plural(len(flagged), 'source')} flagged.</strong></p>"]
+             f"{_plural(len({str(f.get('source')) for f in flagged}), 'source')} flagged.</strong></p>"]
     if flagged:
         items = []
         for f in flagged:
             ip = str(f.get("source") or "")
             level = f.get("level")
-            tag = "Published address" if level is None else "Tier 0" if level == 0 else f"Level {level}"
+            tag = (str(f.get("tag") or "Published address") if level is None
+                   else "Tier 0" if level == 0 else f"Level {level}")
             link = quote(ip, safe=":.")
             extras = ([] if level is None else
                       [f'<a href="explorer.html#source={link}" target="_blank" rel="noopener">on the map</a>'])
@@ -213,7 +214,8 @@ def recent_html(app) -> str:
     for run_id, status, live in rows:
         st = state(status, live)
         summary = status.get("summary") if isinstance(status.get("summary"), dict) else {}
-        flagged = len(summary.get("flagged") or []) if st == "done" else None
+        flagged = (len({str(f.get("source")) for f in summary.get("flagged") or [] if isinstance(f, dict)})
+                   if st == "done" else None)
         body.append(f'<tr><td class="when"><a href="/runs/{quote(run_id)}/">{_local(status.get("started")) or html.escape(run_id)}</a></td>'
                     f"<td>{f'<strong>{html.escape(_name(status))}</strong><br>' if _name(status) else ''}"
                     f"{html.escape(str(status.get('source') or ''))}</td>"
