@@ -348,6 +348,8 @@ worked out by the timing signal and travels to the page with the data.
 ## Known limitation: proxy rotation
 
 These tools rotate through residential, datacenter and free proxies or Tor when blocked. Scoring
-is per source address, so one campaign can be split across several sources. Each finding carries
+is per source address, so one campaign can be split across several sources. Rotating sources and
+shared sweeps (README) tie two common shapes of it together: new addresses coming back to one
+address's sweep, and a sweep of one /24 split between addresses. Each finding carries
 the services, hosts and times it involved, so a later step can group findings by targeted
 service, time window and network owner without changing the signals.

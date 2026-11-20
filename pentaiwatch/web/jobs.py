@@ -75,6 +75,11 @@ def summary(res: dict) -> dict:
                            "regular": v.get("status") == "regular"}
                           for v in res["detection"].get("spray_sources") or []]
                        + _rotation_entries(res)
+                       + [{"source": ip, "level": None, "label": f"came back to {r['service']} after "
+                           f"{len(g['sweepers'])} addresses split a sweep of {g['network']}", "hosts": 1,
+                           "timeline": False, "tag": "Shared sweep", "lead": g.get("status") != "flagged"}
+                          for g in res["detection"].get("shared_sweeps") or [] for r in g["returns"]
+                          for ip in r["sources"]]
                        + [{"source": a["source"], "level": None, "label": f"{a['name'] or 'authorized'}"
                            + (f" ({a['owner']})" if a["owner"] else "") + f": would have been {', '.join(a['behaviours'])}",
                            "hosts": a["hosts"], "timeline": False, "tag": "Authorized", "lead": True, "authorized": True}

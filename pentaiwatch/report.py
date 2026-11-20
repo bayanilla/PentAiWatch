@@ -211,6 +211,30 @@ def _rotation_row(g: dict) -> str:
             f"found: {'; '.join(_joiner(j) for j in g['joiners'])} |")
 
 
+def _shared_lines(sweeps: list[dict], st: dict) -> list[str]:
+    """Shared sweeps, one row per service that a new address came back to."""
+    if not sweeps:
+        return []
+    lines = ["### Shared sweeps", "",
+             f"{_n(len(sweeps), 'sweep')} of one /24 was split between "
+             f"{st['shared_sweep']['min_sources']} or more addresses, none of which swept enough on its own to "
+             "be scored, and an address that had been quiet came back to a service it found. That is how an "
+             "operator rotating through proxies can map a network; ordinary internet scanning tries the same "
+             "few ports from many addresses and does not split anything. A lead around each service; flagged "
+             "when an address in it is a finding of its own.", "",
+             "| Service | Status | Swept by | Came back | Completed sessions | First came back |",
+             "|---|---|---|---|---|---|"]
+    for g in sweeps:
+        status = f"Flagged: {_all(g['backed_by'])}" if g["status"] == "flagged" else "Lead"
+        swept = (f"{len(g['sweepers']):,} addresses ({g['network']}, {g['services_probed']:,} services on "
+                 f"{_n(g['hosts_probed'], 'host')}, {_when(g['probe_start'])} to {_when(g['probe_end'])}): "
+                 f"{', '.join(g['sweepers'][:12])}" + (" and more" if len(g["sweepers"]) > 12 else ""))
+        for r in g["returns"]:
+            lines.append(f"| {r['service']} | {status} | {swept} | {', '.join(r['sources'])} | {r['answered']:,} | "
+                         f"{_when(r['first'])} |")
+    return lines + [""]
+
+
 def _rotation_lines(rotations: list[dict], st: dict) -> list[str]:
     """Sweeps whose findings other, new addresses came straight back to."""
     if not rotations:
@@ -292,6 +316,17 @@ def _steady_lines(steady: list[dict], st: dict) -> list[str]:
         lines.append(f"| {v['source']} | {_status(v)} | {_all([SOURCE_TEXT.get(x, x) for x in v['log_sources']])} | "
                      f"{'; '.join(_steady_run(r) for r in v['runs'])}{more}{_auth_note(v)} |")
     return lines + [""]
+
+
+def _shared_line(st: dict) -> str:
+    sh = st.get("shared_sweep") or {}
+    if not sh.get("check"):
+        return "- Shared sweeps: not checked (shared_sweep.check is off)."
+    return (f"- Shared sweeps: {sh['min_sources']}+ addresses that did not sweep enough on their own, each with "
+            f"{sh['min_probes_per_source']}+ first attempts at one /24 in a window, mostly failed; together "
+            f"passing the probing thresholds with {sh['min_split_share']:.0%}+ of their first attempts to distinct "
+            "services; then an address with no session in the rotation quiet period before comes back to a "
+            "service they found, as narrowing defines it.")
 
 
 def _baseline_line(st: dict) -> str:
@@ -468,6 +503,7 @@ def markdown(res: dict) -> str:
         lines += [f"{_n(swept_only, 'other source')} swept many hosts or ports and did not narrow. That "
                   "looks like plain scanning and is not flagged.", ""]
     lines += _rotation_lines(rotations, st)
+    lines += _shared_lines(det.get("shared_sweeps") or [], st)
     if det.get("rotation_unchecked"):
         lines += [f"{_n(det['rotation_unchecked'], 'sweep')} began less than "
                   f"{st['rotation']['quiet_before_hours']:g} hours after the start of the data, so whether "
@@ -507,6 +543,9 @@ def markdown(res: dict) -> str:
               "it found, as an operator rotating through proxies does. A lead on its own; flagged as one "
               "campaign when the sweeping address is a finding or an address in it also shows fixed-interval "
               "repetition or high-rate repeated connections.",
+              "- **Shared sweeps.** Several addresses split one sweep of a /24 between them, none enough on its "
+              "own, and an address that had been quiet comes back to a service they found. A lead around that "
+              "service; flagged when an address in it is a finding of its own.",
               "- **Lead** means worth a look, not flagged: one behaviour that ordinary traffic can also show. A "
               "published-address match is shown beside it but never turns a lead into a flag.",
               "- **Regular client** is a lead from a source that already repeated to the same service well "
@@ -569,6 +608,7 @@ def markdown(res: dict) -> str:
               f"{st['narrowing']['min_sessions_per_service']}+ completed sessions to a service it found and "
               f"{st['narrowing']['min_focus_share']:.0%}+ of their sessions to those services; services more than "
               f"{st['rotation']['max_service_sources']} outside addresses used never count.",
+              _shared_line(st),
               _outbound_line(st),
               _targets_line(st),
               f"- Never flagged: {', '.join(st['allowlist'] + [k['cidr'] for k in res['known_scanners'] if not _is_auth(k)]) or 'nothing listed'}."
