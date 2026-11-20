@@ -68,7 +68,7 @@ from . import engine
 from .config import Config
 from .knownbad import KnownBad
 from .netmap import NetMap
-from .scanners import Known
+from .scanners import Known, is_authorization
 from .schema import START_END_MINUS_ELAPSED, START_FIELD, START_ZEEK_TS
 
 TIER_0 = "Sweep and narrow seen, timing unavailable"
@@ -158,6 +158,7 @@ class Finding:
     timing: Pace
     threat_evidence: str
     notes: list[str] = field(default_factory=list)    # what a reader should know about this finding's data
+    authorization: str = ""      # why a known_scanners.csv authorization for it did not cover it, if one did not
     known: dict | None = None    # its entry in a list of published attacker addresses, if any
     steady: list[SteadyRun] = field(default_factory=list)   # fixed-interval repetition, if any
     spray: list[SprayRun] = field(default_factory=list)     # high-rate repeated connections, if any
@@ -251,6 +252,7 @@ class SpraySource:
     # every run is to a service the source already repeated to well before; else "lead"
     status: str = "lead"
     backed_by: list[str] = field(default_factory=list)   # those behaviours (BEHAVIOUR_*)
+    authorization: str = ""      # why a known_scanners.csv authorization for it did not cover it, if one did not
 
 
 @dataclass
@@ -300,6 +302,7 @@ class SteadySource:
     # every run is to a service the source already repeated to well before; else "lead"
     status: str = "lead"
     backed_by: list[str] = field(default_factory=list)   # those behaviours (BEHAVIOUR_*)
+    authorization: str = ""      # why a known_scanners.csv authorization for it did not cover it, if one did not
 
 
 @dataclass
@@ -319,6 +322,22 @@ class KnownSource:
     first_seen: str
     last_seen: str
     targets: list[str] = field(default_factory=list)  # kinds of target among all the services it reached
+    authorization: str = ""      # why a known_scanners.csv authorization for it did not cover it, if one did not
+
+
+@dataclass
+class AuthorizedSource:
+    """A source whose activity a known_scanners.csv authorization covers: scored, listed, not flagged."""
+    source: str
+    name: str
+    owner: str
+    expires: str                 # '' when it does not expire
+    scope: list[str]             # '' when any host
+    behaviours: list[str]        # what it would otherwise be listed for
+    sessions: int
+    hosts: int
+    first_seen: str
+    last_seen: str
 
 
 @dataclass
@@ -328,6 +347,8 @@ class Detection:
     steady_sources: list[SteadySource] = field(default_factory=list)
     spray_sources: list[SpraySource] = field(default_factory=list)
     rotations: list[Rotation] = field(default_factory=list)
+    # sources a known_scanners.csv authorization covers (owner, expiry, scope): scored, not flagged
+    authorized: list[AuthorizedSource] = field(default_factory=list)
     # sweeps that found services but began too soon after the start of the data to tell whether later
     # addresses were new (rotation.quiet_before_hours), so nothing was tied to them
     rotation_unchecked: int = 0
@@ -437,6 +458,7 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
             _regular(con, cfg, out)
             out.steady_sources.sort(key=lambda v: v.status == "regular")
             out.spray_sources.sort(key=lambda v: v.status == "regular")
+        _authorize(con, cfg, out)
         listed_but_allowed = sorted(ip for ip in bad if ip in _allowed(con))
         if listed_but_allowed:
             out.warnings.append(f"{len(listed_but_allowed)} source(s) on a list of published attacker addresses are "
@@ -459,7 +481,7 @@ def _classify_addresses(con, cfg: Config) -> dict[str, dict]:
     internal = [ipaddress.ip_network(c, strict=False)
                 for c in list(cfg.internal_nets) + [e["cidr"] for e in cfg.networks]]
     allowed = Known([{"cidr": str(ipaddress.ip_network(c, strict=False)), "name": ""} for c in cfg.allowlist]
-                    + list(cfg.known_scanners))
+                    + [e for e in cfg.known_scanners if not is_authorization(e)])
 
     def is_internal(ip: str) -> bool:
         try:
@@ -1295,6 +1317,65 @@ def _backing(con, out: Detection, spray_any: dict[str, list[SprayRun]] | None = 
                        + ([f"the sweeping address shows {BEHAVIOUR_STEADY}"] if g.sweeper in steady else [])
                        + ([f"the sweeping address shows {BEHAVIOUR_SPRAY}"] if g.sweeper in spray else []))
         g.status = "flagged" if g.backed_by else "lead"
+
+
+def _authorize(con, cfg: Config, out: Detection) -> None:
+    """Move the findings, published-address matches and leads that a known_scanners.csv authorization
+    covers into ``out.authorized``; note on the others why it did not. Covered: every one of the
+    source's scored sessions went to a host in the scope (any host when none is given) and began
+    no later than the expiry (never, when none is given). Rotations are left as they are."""
+    auth = Known([e for e in cfg.known_scanners if is_authorization(e)])
+    if not auth.entries:
+        return
+    kinds: dict[str, list[str]] = {}
+    for f in out.findings:
+        kinds.setdefault(f.source, []).append("Tier 0 finding" if f.level == 0 else f"Level {f.level} finding")
+    for k in out.known_sources:
+        kinds.setdefault(k.source, []).append("published attacker address")
+    for v in out.steady_sources:
+        kinds.setdefault(v.source, []).append(BEHAVIOUR_STEADY)
+    for w in out.spray_sources:
+        kinds.setdefault(w.source, []).append(BEHAVIOUR_SPRAY)
+    covered: set[str] = set()
+    why: dict[str, str] = {}
+    for src, behaviours in kinds.items():
+        entry = auth.entry(src)
+        if entry is None:
+            continue
+        rows = con.execute("SELECT dst_ip, count(*), max(start_ts), min(start_ts) FROM pw_sessions "
+                           "WHERE src_ip = ? GROUP BY dst_ip", [src]).fetchall()
+        scope = Known([{"cidr": c, "name": ""} for c in entry["scope"]])
+        outside = sum(n for dst, n, _, _ in rows if entry["scope"] and scope.label(dst) is None)
+        late = 0
+        if entry["expires"]:
+            late = con.execute("SELECT count(*) FROM pw_sessions WHERE src_ip = ? AND start_ts > ?",
+                               [src, datetime.fromisoformat(entry["expires"].rstrip("Z"))]).fetchone()[0]
+        who = entry["name"] or "an authorized source"
+        if entry["owner"]:
+            who += f" ({entry['owner']})"
+        if not outside and not late:
+            covered.add(src)
+            out.authorized.append(AuthorizedSource(
+                source=src, name=entry["name"], owner=entry["owner"], expires=entry["expires"], scope=entry["scope"],
+                behaviours=behaviours, sessions=sum(int(r[1]) for r in rows), hosts=len(rows),
+                first_seen=_iso(min(r[3] for r in rows)) if rows else "",
+                last_seen=_iso(max(r[2] for r in rows)) if rows else ""))
+            continue
+        parts = ([f"{outside:,} session(s) went to hosts outside its scope"] if outside else []) + \
+                ([f"{late:,} began after it expired ({entry['expires']})"] if late else [])
+        why[src] = f"Authorized in known_scanners.csv as {who}, but " + " and ".join(parts) + ", so it is flagged as usual."
+    out.findings = [f for f in out.findings if f.source not in covered]
+    out.known_sources = [k for k in out.known_sources if k.source not in covered]
+    out.steady_sources = [v for v in out.steady_sources if v.source not in covered]
+    out.spray_sources = [w for w in out.spray_sources if w.source not in covered]
+    for f in out.findings:
+        if f.source in why:
+            f.authorization = why[f.source]
+            f.notes.append(why[f.source])
+    items: list[KnownSource | SteadySource | SpraySource] = [*out.known_sources, *out.steady_sources, *out.spray_sources]
+    for item in items:
+        if item.source in why:
+            item.authorization = why[item.source]
 
 
 def _regular(con, cfg: Config, out: Detection) -> None:

@@ -134,7 +134,35 @@ def _known_lines(known: list[dict]) -> list[str]:
         more = f" and {k['services_total'] - len(k['services']):,} more" if k["services_total"] > len(k["services"]) else ""
         lines.append(f"| {k['source']} | {_published(k)} | {k['sessions']:,} ({k['answered']:,} answered) | "
                      f"{k['hosts']:,} | {', '.join(k['services'])}{more}{_targets_note(k)} | {_when(k['first_seen'])} to "
-                     f"{_when(k['last_seen'])} |")
+                     f"{_when(k['last_seen'])} |{_auth_note(k)}")
+    return lines + [""]
+
+
+def _is_auth(entry: dict) -> bool:
+    return bool(entry.get("owner") or entry.get("expires") or entry.get("scope"))
+
+
+def _auth_note(item: dict) -> str:
+    """A last cell's tail: why an authorization in known_scanners.csv did not cover this source."""
+    return f" {item['authorization']}" if item.get("authorization") else ""
+
+
+def _authorized_lines(items: list[dict]) -> list[str]:
+    """The sources an authorization in known_scanners.csv covers: scored, listed, not flagged."""
+    if not items:
+        return []
+    lines = ["### Authorized activity", "",
+             f"{_n(len(items), 'outside source')} would have been listed above, but an authorization in "
+             "known_scanners.csv (an owner, an expiry date or a scope) covers everything it did: every session "
+             "went to a host in its scope and began before it expired. Not flagged. Check that the owner "
+             "expected it.", "",
+             "| Source | Authorized as | Owner | Until | Scope | Would have been | Sessions | Seen |",
+             "|---|---|---|---|---|---|---|---|"]
+    for a in items:
+        lines.append(f"| {a['source']} | {a['name'] or '(no name)'} | {a['owner'] or '(not given)'} | "
+                     f"{_when(a['expires']) if a['expires'] else 'no expiry'} | {', '.join(a['scope']) or 'any host'} | "
+                     f"{_all(a['behaviours'])} | {a['sessions']:,} to {_n(a['hosts'], 'host')} | "
+                     f"{_when(a['first_seen'])} to {_when(a['last_seen'])} |")
     return lines + [""]
 
 
@@ -234,7 +262,7 @@ def _spray_lines(spray: list[dict], st: dict) -> list[str]:
     for v in spray:
         more = f"; and {v['runs_total'] - len(v['runs']):,} more" if v["runs_total"] > len(v["runs"]) else ""
         lines.append(f"| {v['source']} | {_status(v)} | {_all([SOURCE_TEXT.get(x, x) for x in v['log_sources']])} | "
-                     f"{'; '.join(_spray_run(r) for r in v['runs'])}{more} |")
+                     f"{'; '.join(_spray_run(r) for r in v['runs'])}{more}{_auth_note(v)} |")
     return lines + [""]
 
 
@@ -262,7 +290,7 @@ def _steady_lines(steady: list[dict], st: dict) -> list[str]:
     for v in steady:
         more = f"; and {v['runs_total'] - len(v['runs']):,} more" if v["runs_total"] > len(v["runs"]) else ""
         lines.append(f"| {v['source']} | {_status(v)} | {_all([SOURCE_TEXT.get(x, x) for x in v['log_sources']])} | "
-                     f"{'; '.join(_steady_run(r) for r in v['runs'])}{more} |")
+                     f"{'; '.join(_steady_run(r) for r in v['runs'])}{more}{_auth_note(v)} |")
     return lines + [""]
 
 
@@ -447,6 +475,7 @@ def markdown(res: dict) -> str:
     lines += _known_lines(det.get("known_sources") or [])
     lines += _steady_lines(det.get("steady_sources") or [], st)
     lines += _spray_lines(det.get("spray_sources") or [], st)
+    lines += _authorized_lines(det.get("authorized") or [])
     if map_file:
         replay = (" Its Timeline replays a source's sessions in the order they started, with its bursts and "
                   "pauses." if ex.get("timelines") else "")
@@ -542,9 +571,15 @@ def markdown(res: dict) -> str:
               f"{st['rotation']['max_service_sources']} outside addresses used never count.",
               _outbound_line(st),
               _targets_line(st),
-              f"- Never flagged: {', '.join(st['allowlist'] + [k['cidr'] for k in res['known_scanners']]) or 'nothing listed'}."
+              f"- Never flagged: {', '.join(st['allowlist'] + [k['cidr'] for k in res['known_scanners'] if not _is_auth(k)]) or 'nothing listed'}."
               + (f" That left out {_n(det['never_flagged_sources'], 'outside source')} with "
                  f"{_n(det['never_flagged_sessions'], 'inbound session')}." if det["never_flagged_sources"] else "")]
+    auths = [k for k in res["known_scanners"] if _is_auth(k)]
+    if auths:
+        lines.append("- Authorized (scored, and not flagged while in scope and before expiry): " + "; ".join(
+            f"{k['cidr']} {k['name'] or '(no name)'}" + (f", owner {k['owner']}" if k.get("owner") else "")
+            + (f", until {_when(k['expires'])}" if k.get("expires") else "")
+            + (f", scope {' '.join(k['scope'])}" if k.get("scope") else ", any host") for k in auths) + ".")
     if any(i["format"] == "paloalto" for i in res["inputs"]):
         pa = st["paloalto"]
         back = pa["failed_max_packets_received"]

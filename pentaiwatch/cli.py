@@ -72,11 +72,14 @@ def main(argv=None) -> int:
     leads = len({x["source"] for x in steady + spray if x.get("status") == "lead"}
                 | {g["sweeper"] for g in rotations if g.get("status") != "flagged"})
     regular -= {x["source"] for x in steady + spray if x.get("status") != "regular"}
+    authorized = len(res["detection"].get("authorized") or [])
     reached = len({c["host"] for c in res["detection"].get("outbound_contacts") or []})
     print(f"{res['sessions']:,} sessions read; {total} source{'' if total == 1 else 's'} flagged"
           + (f"; {reached} internal host{'' if reached == 1 else 's'} reached attacker addresses" if reached else "")
           + (f"; {leads} lead{'' if leads == 1 else 's'} to look at (not flagged)" if leads else "")
-          + (f"; {len(regular)} regular client{'' if len(regular) == 1 else 's'}" if regular else "") + ".")
+          + (f"; {len(regular)} regular client{'' if len(regular) == 1 else 's'}" if regular else "")
+          + (f"; {authorized} authorized source{'' if authorized == 1 else 's'} (not flagged)" if authorized else "")
+          + ".")
     for f in found:
         tier = "tier 0" if f["level"] == 0 else f"level {f['level']}"
         hosts = len(f["hosts_hit"])
@@ -97,6 +100,9 @@ def main(argv=None) -> int:
     for g in rotations:
         print(f"  {g['sweeper']}  rotating sources ({g['status']}): {', '.join(j['source'] for j in g['joiners'])} came back to "
               "what it swept")
+    for a in res["detection"].get("authorized") or []:
+        print(f"  {a['source']}  authorized: {a['name'] or 'listed'}" + (f" ({a['owner']})" if a["owner"] else "")
+              + f", would have been {', '.join(a['behaviours'])}")
     for c in res["detection"].get("outbound_contacts") or []:
         print(f"  {c['host']}  reached attacker address {c['destination']}: {c['name'] or 'listed'}  "
               f"({c['sessions']} sessions, {c['answered']} answered)")

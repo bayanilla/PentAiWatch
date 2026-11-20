@@ -152,7 +152,9 @@ def _done(app, run_id: str, status: dict, where: str, heading: str) -> str:
     reached = {str(f.get("source")) for f in flagged if f.get("tag") == "Reached attacker"}
     sources = {str(f.get("source")) for f in flagged if f.get("tag") != "Reached attacker" and not f.get("lead")}
     regular = {str(f.get("source")) for f in flagged if f.get("regular")}
-    leads = {str(f.get("source")) for f in flagged if f.get("lead") and not f.get("regular")} - sources
+    authorized = {str(f.get("source")) for f in flagged if f.get("authorized")}
+    leads = {str(f.get("source")) for f in flagged if f.get("lead") and not f.get("regular")
+             and not f.get("authorized")} - sources
     regular -= sources | leads
     lines = [f'<h1><img class="mark" src="{MARK}" alt="">Results{heading}</h1>', where,
              f"<p><strong>{_plural(int(summary.get('sessions') or 0), 'session')} read; "
@@ -160,6 +162,7 @@ def _done(app, run_id: str, status: dict, where: str, heading: str) -> str:
              + (f"; {_plural(len(reached), 'internal host')} reached attacker addresses" if reached else "")
              + (f"; {_plural(len(leads), 'lead')} to look at" if leads else "")
              + (f"; {_plural(len(regular), 'regular client')}" if regular else "")
+             + (f"; {_plural(len(authorized), 'authorized source')}" if authorized else "")
              + ".</strong></p>"]
     if flagged:
         items = []
@@ -168,7 +171,8 @@ def _done(app, run_id: str, status: dict, where: str, heading: str) -> str:
             level = f.get("level")
             tag = (str(f.get("tag") or "Published address") if level is None
                    else "Tier 0" if level == 0 else f"Level {level}") + (
-                " (regular client)" if f.get("regular") else " (lead)" if f.get("lead") else "")
+                " (regular client)" if f.get("regular") else "" if f.get("authorized")
+                else " (lead)" if f.get("lead") else "")
             link = quote(ip, safe=":.")
             extras = ([] if level is None else
                       [f'<a href="explorer.html#source={link}" target="_blank" rel="noopener">on the map</a>'])
