@@ -24,16 +24,21 @@ How it works, in order:
 8. ``_findings``            one finding per flagged source.
 9. ``_known_sources``       sources on a list of published attacker addresses (knownbad.py) that
                             were not flagged by their traffic: flagged and named all the same.
-10. ``_steady``             sources that hit one service over and over at an almost constant gap,
-                            as a scripted login brute force does: flagged on their own, and
-                            attached to a finding when the source is flagged already.
+10. ``_steady``             fixed-interval cadence: sources that hit one service over and over
+                            at an almost constant gap, as a scripted login brute force does. It
+                            is run before step 6, because it is the second timing pattern.
 11. ``_spray``              sources that sent a flood of completed connections to one service,
-                            minute after minute, as a password spray does: the same.
+                            minute after minute, as a password spray does.
+12. ``_backing``            fixed-interval repetition, high-rate repeated connections and rotating
+                            sources on their own are leads. One is flagged only when evidence from
+                            other sessions of the same source backs it (see there). A
+                            published-address match is context, never backing.
 Within step 8, ``_parallel`` (several attack paths at once) raises a finding's confidence, and
 ``_rotation`` ties new addresses that came straight back to what one sweep found to that sweep.
 
 A source is flagged when probing and narrowing fired and timing either fired too (level 1) or
-could not be judged because its sessions have no start time (tier 0). A source that swept and
+could not be judged because its sessions have no start time (tier 0). Timing fires on either
+pattern: short bursts separated by think-time pauses, or a fixed-interval cadence. A source that swept and
 narrowed at some other pace is not flagged; ``Detection.narrowing_sources`` counts it.
 
 The scoring tables (``pw_sessions``, ``pw_svc``, ``pw_probe``, ``pw_narrow_svc``, ``pw_narrow``,
@@ -71,6 +76,15 @@ LEVEL_1 = "Agentic behaviour"
 MAX_SERVICES_LISTED = 25
 # The start times that are known to be session STARTS. Timing reads these and nothing else.
 TIMED = (START_ZEEK_TS, START_FIELD, START_END_MINUS_ELAPSED)
+# Fixed-interval cadence needs start times finer than the whole seconds an elapsed time gives: a
+# 1.5-second step cannot be told from a 1-or-2-second jitter when the start is end minus elapsed.
+CADENCE_TIMED = (START_ZEEK_TS, START_FIELD)
+PATTERN_BURSTS = "burst and pause"
+PATTERN_CADENCE = "fixed-interval cadence"
+# What a standalone behaviour is called where it backs another one.
+BEHAVIOUR_SWEEP = "sweep"
+BEHAVIOUR_STEADY = "fixed-interval repetition"
+BEHAVIOUR_SPRAY = "high-rate repeated connections"
 
 
 def target_ports(cfg: Config) -> dict[int, str]:
@@ -112,6 +126,10 @@ class Pace:
     window_start: str            # the scoring window in which signal 3 fired with the most such bursts
     window_bursts: int           # how many of them that window holds
     window_pause_share: float | None         # the share of ALL that window's pauses that are in the band
+    patterns: list[str] = field(default_factory=list)   # which timing patterns fired (PATTERN_*)
+    cadence_seconds: float | None = None     # the fixed interval, when that pattern fired (longest run)
+    cadence_service: str = ""                # the service of that run, "host:port/proto"
+    cadence_whole_seconds: bool = False      # that run's times are whole seconds (a firewall start field)
 
 
 @dataclass
@@ -141,8 +159,8 @@ class Finding:
     threat_evidence: str
     notes: list[str] = field(default_factory=list)    # what a reader should know about this finding's data
     known: dict | None = None    # its entry in a list of published attacker addresses, if any
-    steady: list[SteadyRun] = field(default_factory=list)   # machine-steady repetition, if any
-    spray: list[SprayRun] = field(default_factory=list)     # high-rate login spray, if any
+    steady: list[SteadyRun] = field(default_factory=list)   # fixed-interval repetition, if any
+    spray: list[SprayRun] = field(default_factory=list)     # high-rate repeated connections, if any
     targets: list[str] = field(default_factory=list)  # kinds of target among all the services it narrowed onto
     parallel: ParallelPaths | None = None   # several attack paths at once, if seen: higher confidence
     confidence: str = "standard"            # "higher" when several attack paths at once were seen
@@ -197,6 +215,10 @@ class Rotation:
     joiners: list[Joiner]
     services: list[str]          # what the sweep found that the joiners came back to
     log_sources: list[str]
+    # "flagged" when the sweeper is a finding, or an address in it also shows fixed-interval
+    # repetition or high-rate repeated connections; else "lead"
+    status: str = "lead"
+    backed_by: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -214,12 +236,14 @@ class SprayRun:
 
 @dataclass
 class SpraySource:
-    """A source whose only evidence is a high-rate login spray (it was not flagged otherwise)."""
+    """A source with high-rate repeated connections that is not a finding: a lead, or flagged when backed."""
     source: str
     log_sources: list[str]
     runs: list[SprayRun]         # most sessions first (capped)
     runs_total: int
     sessions: int                # all its inbound sessions in the lookback
+    status: str = "lead"         # "flagged" when another behaviour of the source backs it, else "lead"
+    backed_by: list[str] = field(default_factory=list)   # those behaviours (BEHAVIOUR_*)
 
 
 @dataclass
@@ -259,12 +283,14 @@ class C2Hint:
 
 @dataclass
 class SteadySource:
-    """A source whose only evidence is machine-steady repetition (it was not flagged otherwise)."""
+    """A source with fixed-interval repetition that is not a finding: a lead, or flagged when backed."""
     source: str
     log_sources: list[str]
     runs: list[SteadyRun]        # longest first (capped)
     runs_total: int
     sessions: int                # all its inbound sessions in the lookback
+    status: str = "lead"         # "flagged" when another behaviour of the source backs it, else "lead"
+    backed_by: list[str] = field(default_factory=list)   # those behaviours (BEHAVIOUR_*)
 
 
 @dataclass
@@ -313,7 +339,7 @@ class Detection:
 
 
 SCORING_TABLES = ("pw_ip", "pw_sessions", "pw_svc", "pw_probe", "pw_narrow_svc", "pw_narrow", "pw_burst",
-                  "pw_timing", "pw_pace", "pw_sweep", "pw_out")
+                  "pw_timing", "pw_cadence", "pw_pace", "pw_sweep", "pw_out")
 
 
 def detect(con, cfg: Config, *, while_scored=None) -> Detection:
@@ -362,13 +388,14 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
         out.candidates = _services(con, cfg)
         out.probing_sources = _probing(con, cfg)
         _narrowing(con, cfg)
-        _timing(con, cfg)
+        steady = _steady(con, cfg)
+        _timing(con, cfg, steady)
         out.narrowing_sources = _sweeps(con)
-        out.findings = _findings(con, cfg, nm)
+        out.warnings += _cadence_unchecked(con, cfg)
+        out.findings = _findings(con, cfg, nm, steady)
         for f in out.findings:
             f.known = bad.get(f.source)
         out.known_sources = _known_sources(con, bad, {f.source for f in out.findings}, target_ports(cfg))
-        steady = _steady(con, cfg)
         for f in out.findings:
             f.steady = steady.pop(f.source, [])
         out.steady_sources = [
@@ -385,12 +412,14 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
         for f in out.findings:
             f.spray = spray.pop(f.source, [])
         steady_only = {v.source for v in out.steady_sources}
+        spray_any = dict(spray)
         out.spray_sources = [
             SpraySource(source=src, log_sources=log_sources(con, src), runs=runs[:MAX_SPRAY_RUNS],
                         runs_total=len(runs), sessions=int(con.execute(
                             "SELECT count(*) FROM pw_sessions WHERE src_ip = ?", [src]).fetchone()[0]))
             for src, runs in sorted(spray.items(), key=lambda kv: (-kv[1][0].sessions, kv[0]))
             if src not in steady_only]
+        _backing(con, out, spray_any)
         listed_but_allowed = sorted(ip for ip in bad if ip in _allowed(con))
         if listed_but_allowed:
             out.warnings.append(f"{len(listed_but_allowed)} source(s) on a list of published attacker addresses are "
@@ -689,8 +718,12 @@ def _narrowing(con, cfg: Config) -> None:
 
 
 # -- 6. signal 3: timing --------------------------------------------------------------------
-def _timing(con, cfg: Config) -> None:
-    """Tables pw_burst, pw_timing and pw_pace, for the sources where narrowing fired.
+def _timing(con, cfg: Config, steady: dict[str, list[SteadyRun]] | None = None) -> None:
+    """Tables pw_burst, pw_timing, pw_cadence and pw_pace, for the sources where narrowing fired.
+
+    Signal 3 fires on either of two patterns: short bursts separated by think-time pauses
+    (pw_timing), or a fixed-interval cadence (pw_cadence: the sources ``_steady`` found a run for,
+    passed in as ``steady``).
 
     pw_burst   The source's sessions with a known START time, in order, cut into bursts: a gap of
                more than ``burst_gap_seconds`` between two starts ends a burst. One row per burst:
@@ -702,7 +735,8 @@ def _timing(con, cfg: Config) -> None:
                ``pause_min_seconds`` to ``pause_max_seconds``, and at least ``min_pause_share`` of
                ALL the window's pauses inside that band. Nothing is asked of the spacing inside a
                burst, and the pauses need not be alike.
-    pw_pace    One row per source. 'agentic': signal 3 fired in a window. 'unavailable': it did
+    pw_cadence The sources with a fixed-interval run (``steady``).
+    pw_pace    One row per source. 'agentic': signal 3 fired, either pattern. 'unavailable': it did
                not, and fewer than ``min_timed_share`` of the source's sessions have a known
                start time (none at all, in the usual case), so the pace could not be judged.
                'other': the source was seen nearly whole and does not keep that pace.
@@ -743,6 +777,9 @@ def _timing(con, cfg: Config) -> None:
                 {"lo": float(t.pause_min_seconds), "hi": float(t.pause_max_seconds),
                  "max_burst": int(t.max_burst_sessions), "min_cycles": int(t.min_cycles),
                  "min_pause_share": float(t.min_pause_share)})
+    con.execute("CREATE OR REPLACE TEMP TABLE pw_cadence (src_ip VARCHAR)")
+    if steady:
+        con.executemany("INSERT INTO pw_cadence VALUES (?)", [[ip] for ip in sorted(steady)])
     con.execute("""
         CREATE OR REPLACE TEMP TABLE pw_pace AS
         WITH seen AS (
@@ -750,13 +787,15 @@ def _timing(con, cfg: Config) -> None:
                    count(*) FILTER (list_contains(CAST($timed AS VARCHAR[]), start_method)) AS timed
             FROM pw_sessions WHERE src_ip IN (SELECT src_ip FROM pw_narrow) GROUP BY src_ip)
         SELECT src_ip, sessions, timed,
-               CASE WHEN src_ip IN (SELECT src_ip FROM pw_timing) THEN 'agentic'
+               CASE WHEN src_ip IN (SELECT src_ip FROM pw_timing) OR src_ip IN (SELECT src_ip FROM pw_cadence)
+                    THEN 'agentic'
                     WHEN timed = 0 OR timed < $min_timed_share * sessions THEN 'unavailable'
                     ELSE 'other' END AS status
         FROM seen""", {"timed": list(TIMED), "min_timed_share": float(t.min_timed_share)})
 
 
-def _pace(con, cfg: Config, src: str, status: str, sessions: int, timed: int) -> Pace:
+def _pace(con, cfg: Config, src: str, status: str, sessions: int, timed: int,
+          runs: list[SteadyRun] | None = None) -> Pace:
     """The timing evidence of one flagged source, for its finding."""
     t = cfg.timing
     bursts_all, cycles, typical = con.execute("""
@@ -776,11 +815,18 @@ def _pace(con, cfg: Config, src: str, status: str, sessions: int, timed: int) ->
         reason = (f"only {timed:,} of its {sessions:,} sessions have a start time, and those do not show "
                   "the bursts and pauses")
     step = cfg.window_hours * 3600 / 2
+    burst_fired = con.execute("SELECT count(*) FROM pw_timing WHERE src_ip = ?", [src]).fetchone()[0] > 0
+    patterns = ([PATTERN_BURSTS] if burst_fired else []) + ([PATTERN_CADENCE] if runs else [])
+    longest = runs[0] if runs else None
     return Pace(status=status, reason=reason, sessions_timed=int(timed), bursts=int(cycles),
                 bursts_all=int(bursts_all), typical_pause_seconds=round(typical, 1) if typical is not None else None,
                 window_start=_iso(datetime.fromtimestamp(best[0] * step, tz=timezone.utc)) if best else "",
                 window_bursts=int(best[1]) if best else 0,
-                window_pause_share=round(best[3] / best[2], 3) if best else None)
+                window_pause_share=round(best[3] / best[2], 3) if best else None,
+                patterns=patterns if status == "agentic" else [],
+                cadence_seconds=longest.gap_seconds if longest and status == "agentic" else None,
+                cadence_service=longest.service if longest and status == "agentic" else "",
+                cadence_whole_seconds=bool(longest and longest.whole_seconds and status == "agentic"))
 
 
 # -- 7. the window each source is judged by -------------------------------------------------
@@ -800,7 +846,7 @@ def _sweeps(con) -> int:
 
 
 # -- 8. findings ----------------------------------------------------------------------------
-def _findings(con, cfg: Config, nm: NetMap) -> list[Finding]:
+def _findings(con, cfg: Config, nm: NetMap, steady: dict[str, list[SteadyRun]] | None = None) -> list[Finding]:
     """One finding per flagged source: the window where probing and narrowing both fired that holds
     the largest sweep (the earliest such window on a tie), plus everything it did in the lookback
     (so a campaign that pauses and resumes stays one finding)."""
@@ -841,7 +887,7 @@ def _findings(con, cfg: Config, nm: NetMap) -> list[Finding]:
             services=listed, services_total=len(svc_rows), hosts_hit=sorted({r[0] for r in svc_rows}),
             sessions=int(n), first_seen=_iso(first), last_seen=_iso(last),
             campaign_hours=round((last - first).total_seconds() / 3600, 2),
-            timing=_pace(con, cfg, src, status, int(n), int(timed)),
+            timing=_pace(con, cfg, src, status, int(n), int(timed), (steady or {}).get(src)),
             threat_evidence=threat_text, notes=notes, targets=_names(tports, [(r[1], r[2]) for r in svc_rows]),
             parallel=parallel, confidence="higher" if parallel else "standard"))
     return sorted(out, key=lambda f: (-f.level, -f.sessions, f.source))
@@ -1009,7 +1055,7 @@ def _known_sources(con, bad: dict[str, dict], flagged: set[str], tports: dict[in
     return sorted(out, key=lambda k: (rank.get(k.confidence, 3), -k.sessions, k.source))
 
 
-# -- 11. high-rate login spray ---------------------------------------------------------------
+# -- 11. high-rate repeated connections----------------------------------------------------------
 MAX_SPRAY_RUNS = 10
 
 
@@ -1046,14 +1092,16 @@ def _spray(con, cfg: Config) -> dict[str, list[SprayRun]]:
     return out
 
 
-# -- 10. machine-steady repetition ------------------------------------------------------------
+# -- 10. fixed-interval repetition --------------------------------------------------------------
 MAX_STEADY_RUNS = 10
 
 
 def _steady(con, cfg: Config) -> dict[str, list[SteadyRun]]:
     """Per source, its runs of ``steady.min_sessions`` or more sessions to one service, each started
     no more than ``steady.max_gap_seconds`` after the one before, whose gaps vary by no more than
-    ``steady.max_jitter`` of their mean. Longest run first. Only sessions with a known START time.
+    ``steady.max_jitter`` of their mean. Longest run first. Only sessions whose START time was logged
+    (Zeek's ts or the firewall's start field): a start worked out from whole elapsed seconds blurs a
+    1 or 2-second interval, so those sessions are never used here.
 
     Where every time in a run is a whole second (Palo Alto logs), a steady 1.5-second gap shows up
     as 1, 2, 1, 2...: the rounding alone spreads the gaps, so a run whose gaps are all one of two
@@ -1083,7 +1131,7 @@ def _steady(con, cfg: Config) -> dict[str, list[SteadyRun]]:
         FROM runs WHERE n >= $min_sessions AND mean_gap > 0
           AND (sd_gap <= $max_jitter * mean_gap OR (whole AND mean_gap >= 1 AND hi_gap - lo_gap <= 1))
         ORDER BY src_ip, n DESC, first_ts""",
-                       {"timed": list(TIMED), "max_gap": float(s.max_gap_seconds),
+                       {"timed": list(CADENCE_TIMED), "max_gap": float(s.max_gap_seconds),
                         "min_sessions": int(s.min_sessions), "max_jitter": float(s.max_jitter)}).fetchall()
     out: dict[str, list[SteadyRun]] = {}
     tports = target_ports(cfg)
@@ -1093,6 +1141,64 @@ def _steady(con, cfg: Config) -> dict[str, list[SteadyRun]]:
             answered=int(answered), gap_seconds=round(gap, 2), jitter=round(jitter, 3), whole_seconds=bool(whole),
             first=_iso(first), last=_iso(last), target=target_of(tports, port, proto)))
     return out
+
+
+def _cadence_unchecked(con, cfg: Config) -> list[str]:
+    """A warning when sources swept and narrowed but their start times came from elapsed seconds, so
+    the burst pattern was checked and the fixed-interval cadence could not be."""
+    n = con.execute("""
+        SELECT count(*) FROM pw_pace p
+        WHERE p.status = 'other' AND p.src_ip IN (SELECT src_ip FROM pw_sweep WHERE narrowed)
+          AND (SELECT count(*) FILTER (list_contains(CAST($cadence AS VARCHAR[]), start_method))
+               FROM pw_sessions s WHERE s.src_ip = p.src_ip) < $share * p.sessions""",
+                    {"cadence": list(CADENCE_TIMED), "share": float(cfg.timing.min_timed_share)}).fetchone()[0]
+    if not n:
+        return []
+    return [f"{n:,} source(s) swept and narrowed, and their start times were worked out from whole elapsed "
+            "seconds. Their bursts and pauses were checked and did not fit; a fixed-interval cadence cannot be "
+            "checked at that precision, so a tool stepping every 1 or 2 seconds would not be flagged. A "
+            "firewall export with the session start time, or Zeek, settles it."]
+
+
+def _backing(con, out: Detection, spray_any: dict[str, list[SprayRun]] | None = None) -> None:
+    """Set ``status`` and ``backed_by`` on the standalone behaviours: fixed-interval repetition,
+    high-rate repeated connections and rotating sources. Each alone is a lead, because a health
+    check, a busy integration or ordinary clients near a sweep can look the same. One is flagged only
+    when evidence from OTHER sessions of the same source backs it:
+
+    * fixed-interval repetition or high-rate repeated connections: the source swept (signal 1
+      fired), or it shows the other of the two on a different service. On the same service the two
+      are one stream of sessions measured twice (a fast health check is both), so they do not count.
+    * rotating sources: the sweeping address is a finding, or it shows fixed-interval repetition or
+      high-rate repeated connections itself. A joiner's own repetition is what made it a joiner, so
+      it never backs the rotation, and a rotation never backs a joiner's repetition.
+
+    A finding of its own carries its runs already and is not listed here. ``spray_any``: every source
+    with high-rate repeated connections that is not a finding, with its runs, including those listed
+    only under fixed-interval repetition. A published-address match never backs anything."""
+    swept = {r[0] for r in con.execute("SELECT DISTINCT src_ip FROM pw_probe").fetchall()}
+    steady = {v.source: {r.service for r in v.runs} for v in out.steady_sources}
+    spray = {src: {r.service for r in runs} for src, runs in (spray_any or {}).items()}
+    for v in out.spray_sources:
+        spray.setdefault(v.source, {r.service for r in v.runs})
+
+    def backed(src: str, own: dict[str, set], other: dict[str, set], other_name: str) -> list[str]:
+        out_ = [BEHAVIOUR_SWEEP] if src in swept else []
+        if other.get(src, set()) - own.get(src, set()):
+            out_.append(other_name)
+        return out_
+
+    for v in out.steady_sources:
+        v.backed_by = backed(v.source, steady, spray, BEHAVIOUR_SPRAY)
+        v.status = "flagged" if v.backed_by else "lead"
+    for w in out.spray_sources:
+        w.backed_by = backed(w.source, spray, steady, BEHAVIOUR_STEADY)
+        w.status = "flagged" if w.backed_by else "lead"
+    for g in out.rotations:
+        g.backed_by = ((["the sweeping address is a finding"] if g.flagged else [])
+                       + ([f"the sweeping address shows {BEHAVIOUR_STEADY}"] if g.sweeper in steady else [])
+                       + ([f"the sweeping address shows {BEHAVIOUR_SPRAY}"] if g.sweeper in spray else []))
+        g.status = "flagged" if g.backed_by else "lead"
 
 
 def _has_table(con, name: str) -> bool:

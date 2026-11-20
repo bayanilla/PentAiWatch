@@ -79,11 +79,16 @@ class Timing:
 
 @dataclass
 class Steady:
-    """Machine-steady repetition: one source hits one service over and over at an almost constant
-    gap, as a scripted login brute force does (CyberStrikeAI's FortiGate runs retried every 1.5
-    seconds with no jitter). A person, or an agent that stops to think, never keeps a gap that even.
-    Only session START times are used."""
-    min_sessions: int = 50               # sessions in one unbroken run to the same service
+    """Fixed-interval cadence: one source hits one service over and over at an almost constant gap,
+    as a scripted login brute force does (CyberStrikeAI's FortiGate runs retried every 1.5 seconds
+    with no jitter). A person, or an agent that stops to think, never keeps a gap that even.
+
+    It is the second timing pattern: a source that swept and narrowed is Level 1 when either this
+    or the burst-and-pause pattern fires. On its own (no sweep and narrowing) it is a lead, because a
+    health check or a monitoring probe keeps a gap just as even; another behaviour of the same source
+    flags it. Only logged session START times are used (Zeek, or a firewall start field): a start
+    worked out from whole elapsed seconds is too coarse for a 1 or 2-second step."""
+    min_sessions: int = 30               # sessions in one unbroken run to the same service
     max_gap_seconds: float = 10          # a longer gap between two starts ends the run
     # How even the gaps are: their standard deviation divided by their mean. 0.10 means the gaps
     # stay within about a tenth of their typical length.
@@ -92,12 +97,14 @@ class Steady:
 
 @dataclass
 class Spray:
-    """High-rate login spray: one source sends a flood of completed connections to one service,
+    """High-rate repeated connections: one source sends a flood of completed connections to one service,
     minute after minute, as a password spray against a VPN portal, webmail or remote access does
-    (Microsoft saw up to 2,900 failed logins a minute from one Storm-0940 address). Unlike
-    machine-steady repetition, the gaps need not be even. A connection that completes is a login
-    attempt reaching the service; a scan's connections mostly fail. Counted per minute, so it works
-    from session start or end times."""
+    (Microsoft saw up to 2,900 failed logins a minute from one Storm-0940 address). Unlike the
+    fixed-interval cadence, the gaps need not be even. A completed connection reached the service;
+    whether it was a login, and whether the login failed, only that service's own log can say. A
+    busy integration looks the same, so on its own this is a lead; another behaviour of the same
+    source (a sweep, or a fixed-interval cadence) flags it. Counted per minute, so it works from
+    session start or end times."""
     # Sessions in one minute from the source to one TCP service: one a second. A person, or a tool
     # following up on what it found, stays well under that for minutes on end.
     min_per_minute: int = 60

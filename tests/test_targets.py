@@ -1,6 +1,6 @@
 """Named targets: the kinds of service the ARTEX and CyberStrikeAI reporting names (edge-device
 consoles and VPNs, AI model gateways, databases, remote access) are named by port on a finding, its
-services, its machine-steady runs and published-address entries, from either log, and the setting
+services, its fixed-interval runs and published-address entries, from either log, and the setting
 can add, replace and drop names. Naming never changes what is flagged."""
 import json
 import os

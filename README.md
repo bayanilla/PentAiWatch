@@ -6,8 +6,9 @@ penetration-testing tool: a sweep of many hosts or ports, a return to only the s
 answered, and short bursts of activity separated by pauses while a model decides what to do next.
 
 **Status.** This version reads Zeek `conn.log` and Palo Alto traffic logs, alone or together,
-and scores all three signals: the sweep, the narrowing and the timing. A source where all three
-fire is reported as *Level 1. Agentic behaviour*. When the sweep and the narrowing fire but the
+and scores all three signals: the sweep, the narrowing and the timing, which fires on short bursts
+separated by think-time pauses or on a fixed-interval cadence. A source where all three fire is
+reported as *Level 1. Agentic behaviour*. When the sweep and the narrowing fire but the
 sessions have no start time to check the pace by, it is reported one step lower, as *Tier 0. Sweep
 and narrow seen, timing unavailable*. It writes a report and an [Explorer](#explorer): a 3D map of
 what each source swept and came back to, and a [Timeline](#timeline) that replays a source's
@@ -180,32 +181,36 @@ VPN exits rather than scanners, and the low-confidence Censys rows are hosts see
 not seen attacking: read the confidence before acting on a match. Set `known_bad_bundled` to
 `false` to use only your own list.
 
-### Machine-steady repetition
+### Fixed-interval repetition
 
 A scripted login brute force retries at a fixed rate: CyberStrikeAI's FortiGate runs tried a
-password every 1.5 seconds with no jitter. A source that sends `steady.min_sessions` (50) or more
+password every 1.5 seconds with no jitter. A source that sends `steady.min_sessions` (30) or more
 sessions in a row to one service, each within `steady.max_gap_seconds` (10) of the last, with gaps
-that vary by no more than `steady.max_jitter` (10%) of their mean, is flagged for that alone. Only
-session start times are used, so it works from Zeek or from a Palo Alto log. Palo Alto times are
-whole seconds, so a 1.5-second rate shows up as gaps of 1 and 2. A run whose gaps there are all one
-of two neighbouring whole seconds (a second or more apart) counts as steady too; gaps of 0, 1, 2 and
-3 do not. Health checks and monitoring probes can be just as steady: list the
-ones you expect in `known_scanners.csv`.
+that vary by no more than `steady.max_jitter` (10%) of their mean, keeps a fixed interval. For a
+source that swept and narrowed, that is the second timing pattern and makes it Level 1. On its own
+it is a **lead**, because a health check keeps just as even a gap; it is flagged when the same
+source also swept, or shows high-rate repeated connections on another service (see "Leads" in
+[METHODS.md](METHODS.md)). Only logged start times are used (Zeek's ts or the firewall's start
+field), never a start worked out from whole elapsed seconds. Palo Alto start times are whole
+seconds, so a 1.5-second rate shows up as gaps of 1 and 2. A run whose gaps there are all one of two
+neighbouring whole seconds (a second or more apart) counts as steady too; gaps of 0, 1, 2 and 3 do
+not.
 
-### High-rate login spray
+### High-rate repeated connections
 
 A password spray against your VPN portal, webmail or remote access shows up as a flood of
 connections from one address to one service. Microsoft saw up to 2,900 failed logins a minute
 from one Storm-0940 address. A source that sends `spray.min_per_minute` (60, one a second) or more
 sessions a minute to one TCP service, in `spray.min_minutes` (5) or more minutes, with
-`spray.min_answered_share` (50%) or more of them completed, is flagged for that alone. Unlike
-machine-steady repetition, the gaps need not be even. Completed connections are what separate it
+`spray.min_answered_share` (50%) or more of them completed, is reported. On its own it is a
+**lead**, because a busy integration looks the same; it is flagged when the same source also swept,
+or shows fixed-interval repetition on another service. Unlike fixed-interval repetition, the gaps
+need not be even. Completed connections are what separate it
 from a scan, whose connections mostly fail. The connection log shows how hard it hit, not whether a
 login worked, so check that service's own log for the failures. Minutes are counted on whatever
 time the session has, so it works from Zeek or from any Palo Alto export. A service that more than
 `spray.max_service_sources` (20) outside addresses used is public and left out, because a busy
-client of it, or many people behind one NAT address, is expected there. List busy integrations
-you expect in `known_scanners.csv`.
+client of it, or many people behind one NAT address, is expected there.
 
 ### Several attack paths at once
 
@@ -228,7 +233,10 @@ they were never seen before in the lookback, their first session falls between t
 `narrowing.min_sessions_per_service` (5) or more completed sessions to a service the sweep found,
 and `narrowing.min_focus_share` (60%) or more of their sessions go to those services. An address
 that swept itself never joins, because it is scored on its own. With `rotation.min_joiners` (2) or
-more joiners, the sweep and its joiners are flagged together under "Rotating sources". A service that
+more joiners, the sweep and its joiners are listed together under "Rotating sources". Clients and
+monitoring that start near someone's sweep fit that rule too, so a rotation is a **lead** unless the
+sweeping address is a finding or shows fixed-interval repetition or high-rate repeated connections
+itself; then it is flagged as one campaign. A service that
 more than `rotation.max_service_sources` (20) outside addresses used in the lookback is public, such
 as a web site, so new visitors to it never tie addresses together. A campaign whose sweep is itself
 split across proxies is not tied together yet.
@@ -252,7 +260,7 @@ ports (8787, 18080, 8081, 18899) are left out because ordinary services use them
 The ARTEX and CyberStrikeAI reporting says what the agents went for: FortiGate and other firewall
 consoles and VPNs, AI model gateways such as Ollama and LiteLLM, databases, and remote access. The
 `targets` setting names those kinds of service by TCP or UDP port. When a flagged source narrowed
-onto one, the report says so on the finding, in its services table, and beside machine-steady runs
+onto one, the report says so on the finding, in its services table, and beside fixed-interval runs
 and published addresses, so you know which services to check first. Naming a target never changes
 whether a source is flagged. Port 443 is left out on purpose: too much else answers on it.
 
@@ -304,7 +312,7 @@ first is used, a warning names the others, and `--config` settles it.
     "min_timed_share": 0.9
   },
   "steady": {
-    "min_sessions": 50,
+    "min_sessions": 30,
     "max_gap_seconds": 10,
     "max_jitter": 0.1
   },

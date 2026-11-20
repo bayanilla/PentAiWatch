@@ -143,6 +143,13 @@ def _targets_note(item: dict) -> str:
     return f"; named targets: {', '.join(item['targets'])}" if item.get("targets") else ""
 
 
+def _status(item: dict) -> str:
+    """'Flagged: also ...' or 'Lead', for a standalone behaviour."""
+    if item.get("status") == "flagged":
+        return f"Flagged: also {_all(item.get('backed_by') or [])}"
+    return "Lead"
+
+
 def _steady_run(r: dict) -> str:
     spread = ("times in whole seconds, so the gaps vary only by the rounding" if r.get("whole_seconds")
               and r["jitter"] > 0 else f"gaps vary by {r['jitter']:.0%}")
@@ -176,14 +183,16 @@ def _rotation_lines(rotations: list[dict], st: dict) -> list[str]:
              f"{_n(len(rotations), 'sweep')} found services that answered, and then {st['rotation']['min_joiners']} "
              "or more addresses never seen before came straight back to those services and little else. An "
              "operator rotating through proxies looks like this (CrowdStrike lists nine for one ARTEX operator): "
-             "each address alone can stay under the thresholds, so together they are one campaign. Services "
-             f"that more than {st['rotation']['max_service_sources']} outside addresses used are public and never "
-             "tie addresses together.", "",
-             "| Sweep from | Swept | Came back from | Services they came back to | Built from |",
-             "|---|---|---|---|---|"]
+             "each address alone can stay under the thresholds. Ordinary clients and monitoring that start "
+             "near a sweep can look the same, so a rotation is a lead unless the sweeping address is a finding "
+             "or an address in it also shows fixed-interval repetition or high-rate repeated connections. "
+             f"Services that more than {st['rotation']['max_service_sources']} outside addresses used are public "
+             "and never tie addresses together.", "",
+             "| Sweep from | Status | Swept | Came back from | Services they came back to | Built from |",
+             "|---|---|---|---|---|---|"]
     for g in rotations:
         own = " (also a finding above)" if g["flagged"] else ""
-        lines.append(f"| {g['sweeper']}{own} | {g['services_probed']:,} services, {_when(g['probe_start'])} to "
+        lines.append(f"| {g['sweeper']}{own} | {_status(g)} | {g['services_probed']:,} services, {_when(g['probe_start'])} to "
                      f"{_when(g['probe_end'])}; {g['services_found']:,} answered | "
                      f"{'; '.join(_joiner(j) for j in g['joiners'])} | {', '.join(g['services'])} | "
                      f"{_all([SOURCE_TEXT.get(x, x) for x in g['log_sources']])} |")
@@ -198,40 +207,41 @@ def _spray_run(r: dict) -> str:
 
 
 def _spray_lines(spray: list[dict], st: dict) -> list[str]:
-    """The sources flagged for a high-rate login spray alone."""
+    """The sources with high-rate repeated connections that are not findings: flagged or leads."""
     if not spray:
         return []
     s = st["spray"]
-    lines = ["### High-rate login spray", "",
+    lines = ["### High-rate repeated connections", "",
              f"{_n(len(spray), 'outside source')} sent {s['min_per_minute']}+ sessions a minute to one service in "
-             f"{s['min_minutes']}+ minutes, and {s['min_answered_share']:.0%}+ of them completed. A password spray "
-             "against a VPN portal, webmail or remote access looks like this (Microsoft saw up to 2,900 failed "
-             "logins a minute from one Storm-0940 address). The connections show how hard it hit, not whether a "
-             "login worked: check that service's own log for the failures. A busy integration can look the "
-             "same, so list the ones you expect in known_scanners.csv.", "",
-             "| Source | Built from | Services |", "|---|---|---|"]
+             f"{s['min_minutes']}+ minutes, and {s['min_answered_share']:.0%}+ of them completed. That is "
+             "consistent with a password spray against a VPN portal, webmail or remote access (Microsoft saw up "
+             "to 2,900 failed logins a minute from one Storm-0940 address), and also with a busy integration. "
+             "The connections show how hard it hit, not whether logins were tried or failed: check that "
+             "service's own log. On its own this is a lead; it is flagged when another behaviour of the same "
+             "source backs it.", "",
+             "| Source | Status | Built from | Services |", "|---|---|---|---|"]
     for v in spray:
         more = f"; and {v['runs_total'] - len(v['runs']):,} more" if v["runs_total"] > len(v["runs"]) else ""
-        lines.append(f"| {v['source']} | {_all([SOURCE_TEXT.get(x, x) for x in v['log_sources']])} | "
+        lines.append(f"| {v['source']} | {_status(v)} | {_all([SOURCE_TEXT.get(x, x) for x in v['log_sources']])} | "
                      f"{'; '.join(_spray_run(r) for r in v['runs'])}{more} |")
     return lines + [""]
 
 
 def _steady_lines(steady: list[dict], st: dict) -> list[str]:
-    """The sources flagged for machine-steady repetition alone."""
+    """The sources with fixed-interval repetition that are not findings: flagged or leads."""
     if not steady:
         return []
     s = st["steady"]
-    lines = ["### Machine-steady repetition", "",
+    lines = ["### Fixed-interval repetition", "",
              f"{_n(len(steady), 'outside source')} hit one service over and over at an almost constant gap: "
              f"{s['min_sessions']}+ sessions in a row, each within {s['max_gap_seconds']:g} seconds of the last, with "
              f"gaps that vary by no more than {s['max_jitter']:.0%}. A scripted login brute force looks like this "
-             "(CyberStrikeAI's FortiGate runs retried every 1.5 seconds); a person never keeps a gap that even. "
-             "A health check or a monitoring probe can too, so list the ones you expect in known_scanners.csv.", "",
-             "| Source | Built from | Runs |", "|---|---|---|"]
+             "(CyberStrikeAI's FortiGate runs retried every 1.5 seconds); so does a health check or a monitoring "
+             "probe. On its own this is a lead; it is flagged when another behaviour of the same source backs it.", "",
+             "| Source | Status | Built from | Runs |", "|---|---|---|---|"]
     for v in steady:
         more = f"; and {v['runs_total'] - len(v['runs']):,} more" if v["runs_total"] > len(v["runs"]) else ""
-        lines.append(f"| {v['source']} | {_all([SOURCE_TEXT.get(x, x) for x in v['log_sources']])} | "
+        lines.append(f"| {v['source']} | {_status(v)} | {_all([SOURCE_TEXT.get(x, x) for x in v['log_sources']])} | "
                      f"{'; '.join(_steady_run(r) for r in v['runs'])}{more} |")
     return lines + [""]
 
@@ -271,11 +281,20 @@ def _timing_rows(f: dict, st: dict) -> list[str]:
     t = f["timing"]
     if t["status"] != "agentic":
         why = f"not evaluated: {t['reason']}"
-        return [f"| Burst count | {why} |", f"| Typical pause length | {why} |"]
+        return [f"| Timing pattern | {why} |", f"| Burst count | {why} |", f"| Typical pause length | {why} |"]
+    patterns = t.get("patterns") or ["burst and pause"]
+    rows = [f"| Timing pattern | {_all(patterns)} |"]
+    if "fixed-interval cadence" in patterns:
+        whole = (" Its start times are whole seconds (the firewall's start field), so the interval is as precise "
+                 "as that." if t.get("cadence_whole_seconds") else "")
+        rows.append(f"| Cadence interval | one session every {t['cadence_seconds']:g} s to {t['cadence_service']} "
+                    f"(its longest fixed-interval run).{whole} |")
+    if "burst and pause" not in patterns:
+        return rows
     # sessions without a start time are never timed, so say when the count leaves some out
     part = ("" if t["sessions_timed"] >= f["sessions"] else
             f", counted over the {t['sessions_timed']:,} of its {f['sessions']:,} sessions that have a start time")
-    return [f"| Burst count | {_n(t['bursts'], 'short burst')} ({st['timing']['max_burst_sessions']} sessions or "
+    return rows + [f"| Burst count | {_n(t['bursts'], 'short burst')} ({st['timing']['max_burst_sessions']} sessions or "
             f"fewer), each followed by a {_band(st)} pause, of {_n(t['bursts_all'], 'burst')} in all{part} |",
             f"| Typical pause length | {t['typical_pause_seconds']:g} seconds (median of those pauses) |",
             f"| Timing fired in | the {st['window_hours']:g} hours from {_when(t['window_start'])}: "
@@ -312,9 +331,9 @@ def _finding_lines(f: dict, st: dict, map_file: str = "", timeline: bool = False
     if f.get("known"):
         lines.append(f"| Published attacker address | {_published(f['known'])} |")
     if f.get("steady"):
-        lines.append(f"| Machine-steady repetition | {'; '.join(_steady_run(r) for r in f['steady'])} |")
+        lines.append(f"| Fixed-interval repetition | {'; '.join(_steady_run(r) for r in f['steady'])} |")
     if f.get("spray"):
-        lines.append(f"| High-rate login spray | {'; '.join(_spray_run(r) for r in f['spray'])} |")
+        lines.append(f"| High-rate repeated connections | {'; '.join(_spray_run(r) for r in f['spray'])} |")
     if f.get("notes"):
         lines.append(f"| Notes | {' '.join(f['notes'])} |")
     if map_file:
@@ -369,8 +388,9 @@ def markdown(res: dict) -> str:
     agentic = sum(1 for f in found if f["level"] >= 1)
     if agentic:
         lines += [f"{_n(agentic, 'outside source')} swept your hosts, returned only to the services that answered, "
-                  f"and worked in short bursts separated by {_band(st)} pauses, the time a model takes to decide "
-                  "its next step. That is how agentic, AI-driven pentest tools behave.", ""]
+                  f"and worked at a machine's pace: short bursts separated by {_band(st)} pauses, the time a model "
+                  "takes to decide its next step, or a fixed-interval cadence. That is how agentic, AI-driven "
+                  "pentest tools behave; scripted tooling run by a person can look the same.", ""]
     if len(found) > agentic:
         lines += [f"{_n(len(found) - agentic, 'outside source')} swept your hosts and then returned only to the "
                   "services that answered, but the sessions have no start time, so the pace could not be "
@@ -383,8 +403,8 @@ def markdown(res: dict) -> str:
     other_pace = det["narrowing_sources"] - len(found)
     if other_pace > 0:
         lines += [f"{_n(other_pace, 'other source')} swept and then narrowed, but not in short bursts and "
-                  f"{_band(st)} pauses. That looks like a scanner following up on what it found, or a person at "
-                  "work, and is not flagged.", ""]
+                  f"{_band(st)} pauses or at a fixed interval. That looks like a scanner following up on what it "
+                  "found, or a person at work, and is not flagged.", ""]
     rotations = det.get("rotations") or []
     swept_only = det["probing_sources"] - det["narrowing_sources"] - sum(1 for g in rotations if not g["flagged"])
     if swept_only > 0:
@@ -401,17 +421,20 @@ def markdown(res: dict) -> str:
                   "services each flagged source came back to." + replay, ""]
     lines += ["### What the tiers and levels mean", "",
               "- **Level 1. Agentic behaviour.** Probing, narrowing and timing all fired: a sweep, a return to "
-              f"what answered, and short bursts separated by {_band(st)} pauses.",
+              f"what answered, and a machine's pace, either short bursts separated by {_band(st)} pauses or a "
+              "fixed-interval cadence. The finding names which pattern fired.",
               "- **Tier 0. Sweep and narrow seen, timing unavailable.** Probing and narrowing fired. The "
               "timing could not be checked, because the sessions have no start time. A source whose timing "
               "was checked and did not fit is not flagged at all.",
               "- **Published attacker address.** A source on a list of addresses that vendors published for "
               "ARTEX or CyberStrikeAI activity, or on your own known_bad.csv, is flagged whatever its traffic "
               "looked like. The list says who published it and how sure they were.",
-              "- **Machine-steady repetition.** A source that hit one service over and over at an almost "
-              "constant gap, as a scripted login brute force does, is flagged on its own.",
-              "- **High-rate login spray.** A source that sent a flood of completed connections to one service, "
-              "minute after minute, as a password spray does, is flagged on its own.",
+              "- **Fixed-interval repetition.** A source that hit one service over and over at an almost "
+              "constant gap, as a scripted login brute force or a health check does. A lead on its own; flagged "
+              "when a sweep or high-rate repeated connections from the same source back it.",
+              "- **High-rate repeated connections.** A source that sent a flood of completed connections to one "
+              "service, minute after minute, as a password spray or a busy integration does. A lead on its own; "
+              "flagged when a sweep or fixed-interval repetition from the same source backs it.",
               "- **Reaching out to attacker infrastructure.** An internal host with sessions out to a published "
               "attacker address is flagged; it can mean an attack worked. Sessions out to a command-and-control "
               "tool's default port are named as a hint and flag nothing.",
@@ -419,8 +442,11 @@ def markdown(res: dict) -> str:
               "narrowed, the source's bursts worked more than one service, taking turns between them, as an "
               "agent running attack paths side by side does. It never flags a source on its own.",
               "- **Rotating sources.** One address sweeps and other, new addresses come straight back to what "
-              "it found, as an operator rotating through proxies does. The sweep and the addresses are flagged "
-              "together as one campaign.",
+              "it found, as an operator rotating through proxies does. A lead on its own; flagged as one "
+              "campaign when the sweeping address is a finding or an address in it also shows fixed-interval "
+              "repetition or high-rate repeated connections.",
+              "- **Lead** means worth a look, not flagged: one behaviour that ordinary traffic can also show. A "
+              "published-address match is shown beside it but never turns a lead into a flag.",
               "- **Named targets** are the kinds of service the ARTEX and CyberStrikeAI reporting says the agents "
               "went for (edge-device consoles and VPNs, AI model gateways, databases, remote access), by port. "
               "They are named so you can check those services first; they do not change whether a source is "
@@ -464,10 +490,10 @@ def markdown(res: dict) -> str:
               f"in that band. A source's pace is only ruled out when {tm['min_timed_share']:.0%}+ of its sessions "
               "have a start time.",
               _known_bad_line(res),
-              f"- Machine-steady repetition: {st['steady']['min_sessions']}+ sessions in a row to one service, each "
+              f"- Fixed-interval repetition (timing pattern b, and a lead on its own): {st['steady']['min_sessions']}+ sessions in a row to one service, each "
               f"within {st['steady']['max_gap_seconds']:g} seconds of the last, gaps varying by at most "
               f"{st['steady']['max_jitter']:.0%} of their mean.",
-              f"- High-rate login spray: {st['spray']['min_per_minute']}+ sessions a minute to one TCP service in "
+              f"- High-rate repeated connections (a lead on its own): {st['spray']['min_per_minute']}+ sessions a minute to one TCP service in "
               f"{st['spray']['min_minutes']}+ minutes, {st['spray']['min_answered_share']:.0%}+ completed; services "
               f"more than {st['spray']['max_service_sources']} outside addresses used never count.",
               f"- Several attack paths at once: {st['parallel']['min_bursts']}+ bursts after narrowing, each working "

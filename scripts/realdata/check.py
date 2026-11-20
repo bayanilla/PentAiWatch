@@ -15,7 +15,7 @@ What is checked:
    no code with PentAIWatch.
 2. The TSV and JSON forms of the log give the same result.
 3. Nothing in the capture itself is flagged as agentic, and the other signals (published
-   addresses, machine-steady repetition, high-rate spray, rotating sources) find what EXPECTED
+   addresses, fixed-interval repetition, high-rate repeated connections, rotating sources) find what EXPECTED
    says, from every form of the log. One source sweeps and then narrows, an nmap run: a
    ping sweep, a port scan, then service detection on what answered. Its pace is what tells it
    from an agentic tool, and the bursts and pauses PentAIWatch counts for it are the ones the
@@ -74,7 +74,7 @@ EXPECTED = {
     # services with completed connections, well over one a second for minutes: a web server's port 80
     # (10.128.0.248, up to 179 a minute) and web and VNC ports on several hosts (10.164.94.120, up to
     # 411 a minute). That is the brute force the spray signal is for. Nothing is on the published
-    # address lists, nothing keeps a machine-steady gap, and no sweep is followed by new addresses.
+    # address lists, nothing keeps a fixed-interval gap, and no sweep is followed by new addresses.
     # No competition host reached a published attacker address or a command-and-control port out.
     "other_signals": {"known": [], "steady": [], "spray": ["10.128.0.248", "10.164.94.120"], "rotation": [],
                       "outbound": [], "c2_hints": []},

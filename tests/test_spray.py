@@ -1,4 +1,4 @@
-"""High-rate login spray: one source sending a flood of completed connections to one service,
+"""High-rate repeated connections: one source sending a flood of completed connections to one service,
 minute after minute (Microsoft saw up to 2,900 failed logins a minute from one Storm-0940 address).
 Checked from Zeek and from Palo Alto exports with and without start times, against a scan, a short
 flurry and a public service that must not fire."""
@@ -57,9 +57,9 @@ class Spray(unittest.TestCase):
                 self.assertEqual(r["target"], "Edge device admin or VPN")
                 self.assertGreaterEqual(r["minutes"], 5)
                 self.assertGreaterEqual(r["peak_per_minute"], 80)
-                self.assertIn("### High-rate login spray", md)
+                self.assertIn("### High-rate repeated connections", md)
                 self.assertIn(f"| {UNLISTED} | ", md)
-                self.assertIn("- High-rate login spray: 60+ sessions a minute", md)
+                self.assertIn("- High-rate repeated connections (a lead on its own): 60+ sessions a minute", md)
                 self.assertEqual([f["source"] for f in det["findings"]], [sample.AGENT])
 
     def test_a_listed_sprayer_shows_in_both_places(self):
@@ -75,7 +75,7 @@ class Spray(unittest.TestCase):
             with self.subTest(what):
                 det, md = self.analyze(sample.sessions() + extra)
                 self.assertNotIn(UNLISTED, self.sprayers(det))
-                self.assertNotIn("### High-rate login spray", md)
+                self.assertNotIn("### High-rate repeated connections", md)
 
     def test_public_services_are_left_out(self):
         rng = random.Random(8)
