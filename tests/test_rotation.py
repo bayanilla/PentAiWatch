@@ -92,7 +92,7 @@ class Rotating(unittest.TestCase):
         [g] = det["rotations"]
         self.assertEqual((g["sweeper"], g["flagged"]), (sample.AGENT, True))
         self.assertIn("| Rotating sources | 2 new addresses came straight back to what its sweep found: ", md)
-        self.assertIn(f"| {sample.AGENT} (also a finding above) |", md)
+        self.assertIn(f"| {sample.AGENT} (also a finding above); the data starts too soon", md)
 
     def test_one_proxy_is_not_enough(self):
         det, md = self.analyze(sample.sessions() + rotation(n_proxies=1))
@@ -114,6 +114,45 @@ class Rotating(unittest.TestCase):
         det, _ = self.analyze(sample.sessions() + visitors + rotation(services=web),
                               settings={"rotation": {"max_service_sources": 100}})
         self.assertEqual(len(det["rotations"]), 1)
+
+    def test_an_address_already_there_before_the_sweep_does_not_join(self):
+        # the first proxy used the services 90 minutes before the sweep. With a 2-hour lookback that is
+        # older than the lookback, so "first seen in the lookback" would call it new; the quiet period
+        # reads all of the data and does not
+        rng = random.Random(12)
+        earlier = proxy(rng, PROXIES[0], sample.T0 + 20000 - 5400, minutes=5)
+        short = {"lookback_hours": 2}
+        first = [kit.session(sample.T0, sample.CLIENT, "10.10.1.20", 443, "SF")]    # the data starts here
+        det, _ = self.analyze(first + earlier + rotation(), settings=short)
+        [g] = det["rotations"]
+        self.assertEqual([j["source"] for j in g["joiners"]], PROXIES[1:])
+        self.assertEqual(g["novelty"], "checked")
+        # with a quiet period of one hour, those sessions are before it, and the proxy joins again
+        det, _ = self.analyze(first + earlier + rotation(),
+                              settings={**short, "rotation": {"quiet_before_hours": 1}})
+        self.assertEqual([j["source"] for j in det["rotations"][0]["joiners"]], PROXIES)
+
+    def test_a_sweep_at_the_start_of_the_data_ties_nothing_unless_it_is_a_finding(self):
+        # every address is first seen when the data begins, so new cannot be told from old
+        rng = random.Random(5)
+        out, end = sweep_only(rng, start=600.0)
+        for i, src in enumerate(PROXIES):
+            out += proxy(rng, src, end + 120 + 60 * i)
+        det, md = self.analyze([s for s in sample.sessions() if s["src"] != sample.AGENT] + out)
+        self.assertEqual(det["rotations"], [])
+        self.assertGreaterEqual(det["rotation_unchecked"], 1)
+        self.assertIn("after the start of the data, so whether addresses that came back", md)
+
+    def test_a_finding_at_the_start_of_the_data_still_anchors_and_says_novelty_is_unknown(self):
+        rng = random.Random(4)
+        sessions = sample.sessions()
+        first_return = min(s["ts"] for s in sessions if s["src"] == sample.AGENT and s["state"] == "SF"
+                           and (s["dst"], s["dport"]) in sample.NARROWED)
+        extra = [x for i, ip in enumerate(PROXIES[:2]) for x in proxy(rng, ip, first_return + 60 * (i + 1))]
+        det, md = self.analyze(sessions + extra)
+        [g] = det["rotations"]
+        self.assertEqual((g["sweeper"], g["novelty"]), (sample.AGENT, "unknown"))
+        self.assertIn("the data starts too soon before this sweep to tell whether the others were new", md)
 
     def test_the_sample_has_no_rotation(self):
         det, _ = self.analyze(sample.sessions())

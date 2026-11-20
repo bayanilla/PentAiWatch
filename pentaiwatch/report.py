@@ -183,7 +183,8 @@ def _rotation_lines(rotations: list[dict], st: dict) -> list[str]:
              f"{_n(len(rotations), 'sweep')} found services that answered, and then {st['rotation']['min_joiners']} "
              "or more addresses never seen before came straight back to those services and little else. An "
              "operator rotating through proxies looks like this (CrowdStrike lists nine for one ARTEX operator): "
-             "each address alone can stay under the thresholds. Ordinary clients and monitoring that start "
+             "each address alone can stay under the thresholds. Each of those addresses had no session at "
+             f"all in the {st['rotation']['quiet_before_hours']:g} hours before the sweep. Ordinary clients and monitoring that start "
              "near a sweep can look the same, so a rotation is a lead unless the sweeping address is a finding "
              "or an address in it also shows fixed-interval repetition or high-rate repeated connections. "
              f"Services that more than {st['rotation']['max_service_sources']} outside addresses used are public "
@@ -192,6 +193,8 @@ def _rotation_lines(rotations: list[dict], st: dict) -> list[str]:
              "|---|---|---|---|---|---|"]
     for g in rotations:
         own = " (also a finding above)" if g["flagged"] else ""
+        if g.get("novelty") == "unknown":
+            own += "; the data starts too soon before this sweep to tell whether the others were new"
         lines.append(f"| {g['sweeper']}{own} | {_status(g)} | {g['services_probed']:,} services, {_when(g['probe_start'])} to "
                      f"{_when(g['probe_end'])}; {g['services_found']:,} answered | "
                      f"{'; '.join(_joiner(j) for j in g['joiners'])} | {', '.join(g['services'])} | "
@@ -411,6 +414,10 @@ def markdown(res: dict) -> str:
         lines += [f"{_n(swept_only, 'other source')} swept many hosts or ports and did not narrow. That "
                   "looks like plain scanning and is not flagged.", ""]
     lines += _rotation_lines(rotations, st)
+    if det.get("rotation_unchecked"):
+        lines += [f"{_n(det['rotation_unchecked'], 'sweep')} began less than "
+                  f"{st['rotation']['quiet_before_hours']:g} hours after the start of the data, so whether "
+                  "addresses that came back to what it found were new cannot be told; none was tied to it.", ""]
     lines += _known_lines(det.get("known_sources") or [])
     lines += _steady_lines(det.get("steady_sources") or [], st)
     lines += _spray_lines(det.get("spray_sources") or [], st)
