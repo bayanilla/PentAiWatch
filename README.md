@@ -550,7 +550,16 @@ The tests generate their own logs (`tests/kit.py`, `tests/sample.py`): an agenti
 scanner and an ordinary client, written as Zeek `conn.log`, as a Palo Alto CSV export and as Palo
 Alto syslog lines, plus a source that sweeps and narrows exactly as the agent does at another pace.
 The timing tests check every number against a plain reading of the same sessions that shares no
-code with the detection. No log files are committed.
+code with the detection.
+
+### Bundled samples
+
+`samples/` holds two fabricated Zeek `conn.log` files: PentAIWatch's copies of VulnScope MAX's ARTEX
+and CyberStrikeAI stories, with a made-up sweep added before each operator's first session (MAX's
+logs have none). `scripts/samples/build.py` adds the sweep and writes three Palo Alto traffic versions
+of each: with a start time, with elapsed seconds only, and with neither. Only the Zeek logs are
+committed; `tests/test_samples.py` builds the Palo Alto versions and checks what each one gives.
+Each folder's README says what to expect and why.
 
 The Explorer page is checked in a real browser. `scripts/smoke/explorer_smoke.py` writes the
 sample logs five ways, analyzes them, opens each `explorer.html` in headless Chromium and walks
