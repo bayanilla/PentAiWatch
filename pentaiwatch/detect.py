@@ -1149,16 +1149,19 @@ def _steady(con, cfg: Config) -> dict[str, list[SteadyRun]]:
 
 
 def _narrowed_cadence(con, cfg: Config) -> dict[str, SteadyRun]:
-    """Per source where narrowing fired, its longest fixed-interval run ACROSS services, from the
-    moment it narrowed: ``steady.min_sessions`` or more sessions in a row, whatever service each
+    """Per source where narrowing fired, its longest fixed-interval run ACROSS services, from the end
+    of the sweep it narrowed after (its last first attempt): ``steady.min_sessions`` or more sessions in a row, whatever service each
     went to, each started within ``steady.max_gap_seconds`` of the one before, gaps varying by no
     more than ``steady.max_jitter`` of their mean (the same whole-second allowance as ``_steady``).
     A tool that steps through what answered at a fixed rate (CyberStrikeAI fingerprinted management
     ports every 2 seconds, a few sessions per port) keeps no one service busy long enough for a
-    per-service run. The sweep itself is left out: a scanner probing at a fixed rate is not this."""
+    per-service run. The sweep itself is left out: a scanner probing at a fixed rate is not this.
+    It starts at the sweep's end rather than at the first return, because the first steps can go to
+    services that answered but were not returned to five times."""
     s = cfg.steady
     rows = con.execute("""
-        WITH since AS (SELECT src_ip, min(narrowing_start) AS t0 FROM pw_narrow GROUP BY src_ip),
+        WITH since AS (SELECT n.src_ip, min(p.probe_end) AS t0 FROM pw_narrow n JOIN pw_probe p USING (src_ip, k)
+                       GROUP BY n.src_ip),
         t AS (
             SELECT p.src_ip, p.start_ts, p.dst_ip, p.dst_port, p.proto, p.outcome,
                    epoch(p.start_ts) - epoch(lag(p.start_ts) OVER w) AS gap
