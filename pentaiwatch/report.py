@@ -125,16 +125,31 @@ def _known_lines(known: list[dict]) -> list[str]:
     """The sources flagged only because a list of published attacker addresses names them."""
     if not known:
         return []
-    lines = ["### Published attacker addresses", "",
+    lines = ["## Context: published attacker addresses", "",
              f"{_n(len(known), 'outside source')} reached your hosts from an address published for ARTEX or "
-             "CyberStrikeAI activity (or listed in your known_bad.csv). Their traffic did not show the sweep, "
-             "narrowing and pace above, so this rests on the list alone: check who published it and when.", "",
+             "CyberStrikeAI activity (or listed in your known_bad.csv). This is context, kept apart from the "
+             "behaviour above: their traffic did not show the sweep, narrowing and pace, so this rests on the "
+             "list alone. They are flagged on sight; check who published the address and when, and how sure "
+             "they were.", "",
              "| Source | Published as | Sessions | Hosts | Services it reached | Seen |", "|---|---|---|---|---|---|"]
     for k in known:
         more = f" and {k['services_total'] - len(k['services']):,} more" if k["services_total"] > len(k["services"]) else ""
         lines.append(f"| {k['source']} | {_published(k)} | {k['sessions']:,} ({k['answered']:,} answered) | "
                      f"{k['hosts']:,} | {', '.join(k['services'])}{more}{_targets_note(k)} | {_when(k['first_seen'])} to "
                      f"{_when(k['last_seen'])} |{_auth_note(k)}")
+    return lines + [""]
+
+
+def _coverage_lines(rows: list[dict]) -> list[str]:
+    """What each detector could check on this data: a detector that could not run found nothing
+    because it could not look, not because there was nothing."""
+    if not rows:
+        return []
+    lines = ["### What could be checked", "",
+             "A detector that could not run on this data found nothing because it could not look. "
+             "Not checked or partly checked is not a clean bill.", "",
+             "| Detector | Coverage | Why |", "|---|---|---|"]
+    lines += [f"| {r['detector']} | {r['status'].capitalize()} | {r['detail']} |" for r in rows]
     return lines + [""]
 
 
@@ -508,7 +523,6 @@ def markdown(res: dict) -> str:
         lines += [f"{_n(det['rotation_unchecked'], 'sweep')} began less than "
                   f"{st['rotation']['quiet_before_hours']:g} hours after the start of the data, so whether "
                   "addresses that came back to what it found were new cannot be told; none was tied to it.", ""]
-    lines += _known_lines(det.get("known_sources") or [])
     lines += _steady_lines(det.get("steady_sources") or [], st)
     lines += _spray_lines(det.get("spray_sources") or [], st)
     lines += _authorized_lines(det.get("authorized") or [])
@@ -560,6 +574,8 @@ def markdown(res: dict) -> str:
               "mean there were no exploit attempts. Threat logs that were read are not scored yet either.", "",
               "### Known limitations", ""]
     lines += [f"- {text}" for text in res["limitations"]] + [""]
+    lines += _coverage_lines(det.get("coverage") or [])
+    lines += _known_lines(det.get("known_sources") or [])
     if res["warnings"]:
         lines += ["## Warnings", ""] + [f"- {w}" for w in res["warnings"]] + [""]
     lines += ["## Input files", "", "| File | Format | Records read | Kept | Notes |", "|---|---|---|---|---|"]

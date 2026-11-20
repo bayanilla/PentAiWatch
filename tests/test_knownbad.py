@@ -79,7 +79,8 @@ class Detection(unittest.TestCase):
         [k] = det["known_sources"]
         self.assertEqual((k["source"], k["sessions"], k["answered"], k["hosts"]), (LISTED, 6, 6, 1))
         self.assertEqual(k["services"], ["10.10.1.10:443/tcp"])
-        self.assertIn("### Published attacker addresses", md)
+        self.assertIn("## Context: published attacker addresses", md)
+        self.assertLess(md.index("### Known limitations"), md.index("## Context: published attacker addresses"))
         self.assertIn(f"| {LISTED} | ARTEX: primary origin", md)
         self.assertIn("Flagged on sight: the bundled list", md)
 
