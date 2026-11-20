@@ -133,6 +133,28 @@ class Leads(unittest.TestCase):
                 self.assertEqual(self.by_source(res["detection"]["findings"])[sample.AGENT]["timing"]["patterns"],
                                  ["burst and pause"])
 
+    def test_fingerprinting_in_turn_at_a_fixed_interval_is_level_1(self):
+        # after its sweep the tool steps through six services that answered, one session every 2.0
+        # seconds, five each: no one service gets a run of 30, but the source keeps the interval
+        swept, end = sweep()
+        services = sorted(sample.OPEN - {("10.10.2.15", 25)})
+        steps = [kit.session(sample.T0 + end + 60 + 2.0 * i, TOOL, *services[i % 6], "SF") for i in range(30)]
+        for zeek, firewall in ((True, False), (False, True)):
+            with self.subTest(zeek=zeek, firewall=firewall):
+                res, md = self.analyze(sample.sessions() + swept + steps, zeek, firewall)
+                f = self.by_source(res["detection"]["findings"])[TOOL]
+                self.assertEqual((f["level"], f["timing"]["patterns"]), (1, ["fixed-interval cadence"]))
+                self.assertEqual(f["timing"]["cadence_service"], "6 services in turn")
+                self.assertIn("| Cadence interval | one session every 2 s to 6 services in turn", md)
+        # the same steps with an uneven pace are not a cadence: the source is not flagged
+        rng = random.Random(9)
+        t, uneven = sample.T0 + end + 60, []
+        for i in range(30):
+            uneven.append(kit.session(t, TOOL, *services[i % 6], "SF"))
+            t += rng.uniform(1.0, 6.0)
+        res, _ = self.analyze(sample.sessions() + swept + uneven)
+        self.assertNotIn(TOOL, [f["source"] for f in res["detection"]["findings"]])
+
     def test_cadence_is_never_read_from_elapsed_seconds(self):
         # the same tool from a firewall export with no start time: its start is end minus elapsed,
         # too coarse for a 1.5-second step, so the cadence is not checked, and the report says so

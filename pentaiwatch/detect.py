@@ -735,7 +735,8 @@ def _timing(con, cfg: Config, steady: dict[str, list[SteadyRun]] | None = None) 
                ``pause_min_seconds`` to ``pause_max_seconds``, and at least ``min_pause_share`` of
                ALL the window's pauses inside that band. Nothing is asked of the spacing inside a
                burst, and the pauses need not be alike.
-    pw_cadence The sources with a fixed-interval run (``steady``).
+    pw_cadence The sources with a fixed-interval run: to one service (``steady``), or across the
+               services it narrowed onto, from narrowing on (``_narrowed_cadence``).
     pw_pace    One row per source. 'agentic': signal 3 fired, either pattern. 'unavailable': it did
                not, and fewer than ``min_timed_share`` of the source's sessions have a known
                start time (none at all, in the usual case), so the pace could not be judged.
@@ -778,8 +779,9 @@ def _timing(con, cfg: Config, steady: dict[str, list[SteadyRun]] | None = None) 
                  "max_burst": int(t.max_burst_sessions), "min_cycles": int(t.min_cycles),
                  "min_pause_share": float(t.min_pause_share)})
     con.execute("CREATE OR REPLACE TEMP TABLE pw_cadence (src_ip VARCHAR)")
-    if steady:
-        con.executemany("INSERT INTO pw_cadence VALUES (?)", [[ip] for ip in sorted(steady)])
+    cadence = sorted(set(steady or {}) | set(_narrowed_cadence(con, cfg)))
+    if cadence:
+        con.executemany("INSERT INTO pw_cadence VALUES (?)", [[ip] for ip in cadence])
     con.execute("""
         CREATE OR REPLACE TEMP TABLE pw_pace AS
         WITH seen AS (
@@ -816,6 +818,9 @@ def _pace(con, cfg: Config, src: str, status: str, sessions: int, timed: int,
                   "the bursts and pauses")
     step = cfg.window_hours * 3600 / 2
     burst_fired = con.execute("SELECT count(*) FROM pw_timing WHERE src_ip = ?", [src]).fetchone()[0] > 0
+    if not runs:
+        across = _narrowed_cadence(con, cfg).get(src)
+        runs = [across] if across else []
     patterns = ([PATTERN_BURSTS] if burst_fired else []) + ([PATTERN_CADENCE] if runs else [])
     longest = runs[0] if runs else None
     return Pace(status=status, reason=reason, sessions_timed=int(timed), bursts=int(cycles),
@@ -1141,6 +1146,47 @@ def _steady(con, cfg: Config) -> dict[str, list[SteadyRun]]:
             answered=int(answered), gap_seconds=round(gap, 2), jitter=round(jitter, 3), whole_seconds=bool(whole),
             first=_iso(first), last=_iso(last), target=target_of(tports, port, proto)))
     return out
+
+
+def _narrowed_cadence(con, cfg: Config) -> dict[str, SteadyRun]:
+    """Per source where narrowing fired, its longest fixed-interval run ACROSS services, from the
+    moment it narrowed: ``steady.min_sessions`` or more sessions in a row, whatever service each
+    went to, each started within ``steady.max_gap_seconds`` of the one before, gaps varying by no
+    more than ``steady.max_jitter`` of their mean (the same whole-second allowance as ``_steady``).
+    A tool that steps through what answered at a fixed rate (CyberStrikeAI fingerprinted management
+    ports every 2 seconds, a few sessions per port) keeps no one service busy long enough for a
+    per-service run. The sweep itself is left out: a scanner probing at a fixed rate is not this."""
+    s = cfg.steady
+    rows = con.execute("""
+        WITH since AS (SELECT src_ip, min(narrowing_start) AS t0 FROM pw_narrow GROUP BY src_ip),
+        t AS (
+            SELECT p.src_ip, p.start_ts, p.dst_ip, p.dst_port, p.proto, p.outcome,
+                   epoch(p.start_ts) - epoch(lag(p.start_ts) OVER w) AS gap
+            FROM pw_sessions p JOIN since USING (src_ip)
+            WHERE p.start_ts >= since.t0 AND list_contains(CAST($timed AS VARCHAR[]), p.start_method)
+            WINDOW w AS (PARTITION BY p.src_ip ORDER BY p.start_ts, p.seq)),
+        r AS (
+            SELECT *, sum(CASE WHEN gap IS NULL OR gap > $max_gap THEN 1 ELSE 0 END) OVER (
+                PARTITION BY src_ip ORDER BY start_ts ROWS UNBOUNDED PRECEDING) AS run
+            FROM t),
+        runs AS (
+            SELECT src_ip, run, count(*) AS n, count(*) FILTER (outcome = 'answered') AS answered,
+                   count(DISTINCT (dst_ip, dst_port, proto)) AS services,
+                   min(start_ts) AS first_ts, max(start_ts) AS last_ts,
+                   avg(gap) FILTER (gap <= $max_gap) AS mean_gap, stddev_pop(gap) FILTER (gap <= $max_gap) AS sd_gap,
+                   min(gap) FILTER (gap <= $max_gap) AS lo_gap, max(gap) FILTER (gap <= $max_gap) AS hi_gap,
+                   bool_and(epoch(start_ts) = floor(epoch(start_ts))) AS whole
+            FROM r GROUP BY src_ip, run)
+        SELECT src_ip, n, answered, services, mean_gap, sd_gap / mean_gap, whole, first_ts, last_ts
+        FROM runs WHERE n >= $min_sessions AND mean_gap > 0
+          AND (sd_gap <= $max_jitter * mean_gap OR (whole AND mean_gap >= 1 AND hi_gap - lo_gap <= 1))
+        QUALIFY row_number() OVER (PARTITION BY src_ip ORDER BY n DESC, first_ts) = 1""",
+                       {"timed": list(CADENCE_TIMED), "max_gap": float(s.max_gap_seconds),
+                        "min_sessions": int(s.min_sessions), "max_jitter": float(s.max_jitter)}).fetchall()
+    return {src: SteadyRun(service=f"{services} services in turn", sessions=int(n), answered=int(answered),
+                           gap_seconds=round(gap, 2), jitter=round(jitter, 3), whole_seconds=bool(whole),
+                           first=_iso(first), last=_iso(last))
+            for src, n, answered, services, gap, jitter, whole, first, last in rows}
 
 
 def _cadence_unchecked(con, cfg: Config) -> list[str]:

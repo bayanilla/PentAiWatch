@@ -167,8 +167,14 @@ are all one of two neighbouring whole seconds, a second or more apart, counts to
 times are used: Zeek's ts or the firewall's start field. A start worked out as end minus whole
 elapsed seconds cannot tell a 1.5-second step from jitter, so those sessions are never read for
 this pattern; when a source swept and narrowed on such times and the burst pattern did not fit, a
-warning says the cadence could not be checked. The finding gives the interval and the service of
-the longest run, and says when its times were whole seconds.
+warning says the cadence could not be checked.
+
+A tool can also step through what answered at a fixed rate, a few sessions per service
+(CyberStrikeAI fingerprinted management ports every 2 seconds). No one service then gets a run, so
+the same test is also made on all of the source's sessions in turn, from the moment it narrowed:
+`steady.min_sessions` (30) or more in a row, whatever service each went to. The sweep itself is left
+out, because a scanner probing at a fixed rate is not this. The finding gives the interval and the
+service of the longest run (or "N services in turn"), and says when its times were whole seconds.
 
 ### Result
 
