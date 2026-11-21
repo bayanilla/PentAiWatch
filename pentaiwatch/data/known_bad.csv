@@ -1,7 +1,8 @@
-# Published addresses of ARTEX and CyberStrikeAI activity, bundled with PentAIWatch.
+# Published addresses of ARTEX, CyberStrikeAI and Cairn activity, bundled with PentAIWatch.
 # Built by scripts/known_bad/build.py from SecureDataSolutions/artex-hunting-pack iocs.csv
 # (MIT licence, Copyright (c) 2026 Secure Data Solutions, Inc.; sha256 d7700f8fd5d6507616a92e4bdf8b27bccb60f80cafb14d8ad4ca114d6cd52ee5)
-# and the Unit 42 note of 2026-10-30. Each row names who published it and how sure they are.
+# the Unit 42 note of 2026-10-30, and reports of November 2026 by Unit 42, AWS, Elastic Security Labs
+# and SentinelOne. Each row names who published it and how sure they are.
 address,name,confidence,reference
 38.244.50.120/32,KR finance (unattributed): artex server (CrowdStrike),high,https://www.crowdstrike.com/en-us/blog/unknown-threat-actor-uses-artex-to-target-south-korean-finance/
 101.53.80.20/32,KR finance (unattributed): proxy (CrowdStrike),medium,https://www.crowdstrike.com/en-us/blog/unknown-threat-actor-uses-artex-to-target-south-korean-finance/
@@ -97,3 +98,13 @@ address,name,confidence,reference
 173.254.220.78/32,ARTEX: reconnaissance and account-recovery probing; Sub2API gateway (Unit 42),medium,https://github.com/PaloAltoNetworks/Unit42-timely-threat-intel/blob/main/2026-10-30-activity-using-ARTEX-agentic-AI.txt
 103.100.158.103/32,"ARTEX: scanning and authorization-flow probing (Unit 42, monitor only)",low,https://github.com/PaloAltoNetworks/Unit42-timely-threat-intel/blob/main/2026-10-30-activity-using-ARTEX-agentic-AI.txt
 152.233.51.12/32,"ARTEX: probing and unauthenticated API writes (Unit 42, monitor only)",low,https://github.com/PaloAltoNetworks/Unit42-timely-threat-intel/blob/main/2026-10-30-activity-using-ARTEX-agentic-AI.txt
+154.44.31.4/32,"Cairn: Cairn hosting server, CL-STA-1238 (Unit 42)",high,https://unit42.paloaltonetworks.com/cairn-framework-ai-autonomous-attacks/
+82.29.129.54/32,"Cairn: staging server and attack egress, CL-STA-1238 (Unit 42)",high,https://unit42.paloaltonetworks.com/cairn-framework-ai-autonomous-attacks/
+142.4.98.145/32,"Cairn: in records of the university intrusions, 8 to 10 Sep 2026 (AWS)",medium,https://aws.amazon.com/blogs/security/chinese-nexus-actors-cairn-ai-agents-found-a-zero-day-on-their-own/
+142.4.107.34/32,"Cairn: in records of the university intrusions, 8 to 10 Sep 2026 (AWS)",medium,https://aws.amazon.com/blogs/security/chinese-nexus-actors-cairn-ai-agents-found-a-zero-day-on-their-own/
+43.240.29.11/32,"CyberStrikeAI: server, source of an AWS intrusion; web interface on 8080 (Elastic)",high,https://www.elastic.co/security-labs/threat-command/cyberstrikeai-aws-cloudtrail-intrusion
+43.240.29.28/32,CyberStrikeAI: serves the same CyberStrikeAI certificate on 8080 (Elastic),medium,https://www.elastic.co/security-labs/threat-command/cyberstrikeai-aws-cloudtrail-intrusion
+43.240.29.33/32,CyberStrikeAI: serves the same CyberStrikeAI certificate on 8080 (Elastic),medium,https://www.elastic.co/security-labs/threat-command/cyberstrikeai-aws-cloudtrail-intrusion
+199.19.77.84/32,"ARTEX: service principal sign-ins, suspected ARTEX use (SentinelOne)",low,https://www.sentinelone.com/blog/artex-unmasked-the-rise-of-ai-powered-artex-in-cybercrime-espionage/
+65.87.223.26/32,"ARTEX: shell commands in user agents, App Service token attempts (SentinelOne)",low,https://www.sentinelone.com/blog/artex-unmasked-the-rise-of-ai-powered-artex-in-cybercrime-espionage/
+157.22.126.128/32,ARTEX: reconnaissance against Azure AI workloads (SentinelOne),low,https://www.sentinelone.com/blog/artex-unmasked-the-rise-of-ai-powered-artex-in-cybercrime-espionage/
