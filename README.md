@@ -415,6 +415,37 @@ drop one. *What could be checked* says which of the three logs were given.
 `"web": {"check": false}` reads those logs as before: counted and set aside. Palo Alto URL
 filtering logs are not read yet.
 
+### MITRE ATT&CK and ATLAS labels
+
+Each detector carries the MITRE technique its behaviour corresponds to, so what a report finds can
+be filed under the framework your team already reports in. They are labels: they change nothing
+about what is detected or flagged.
+
+- **ATT&CK** names the network behaviour: a sweep is T1595 Active Scanning and T1595.001 Scanning IP
+  Blocks, the failed-login pattern is T1110.003 Password Spraying.
+- **ATLAS** (Adversarial Threat Landscape for AI Systems) names what is specific to an AI agent
+  doing it: a sweep that then returns only to what answered is AML.T0116 Autonomous Reconnaissance,
+  bursts with pauses are AML.T0117 Autonomous Attack-Path Adaptation, an agentic tool's user agent
+  is AML.T0016.004 AI Agent Tools.
+
+Every label has a fit. *Direct*: the detector sees the technique itself. *Possible*: the behaviour
+is consistent with it and connection logs cannot confirm it. Almost every ATLAS label is *possible*,
+because whether an agent or a person chose the next step is never in a log.
+
+Where they show: a *MITRE techniques* row on each finding, a column in *What could be checked*, a
+*MITRE ATT&CK and ATLAS labels* table under it with the reason for each label, and `techniques` on
+each coverage row in `results.json`. Fixed-interval repetition, published addresses and
+no-overnight-break carry no technique, and the table says why.
+
+The labels live in `pentaiwatch/data/frameworks.csv`, one row per detector and technique; edit it to
+correct or extend them. The ids and names were read from Enterprise ATT&CK 20.1 and ATLAS 2026.10,
+and the report gives ids and names without links because it never links outside the run. Look an
+id up at attack.mitre.org or atlas.mitre.org.
+
+Most of ATLAS cannot be seen from connection logs at all: anything inside a prompt, a model, an
+agent's memory or its tools (prompt injection, poisoning, model theft, tool abuse) is out of reach
+here, and no label claims it.
+
 ### Named targets
 
 The ARTEX and CyberStrikeAI reporting says what the agents went for: FortiGate and other firewall

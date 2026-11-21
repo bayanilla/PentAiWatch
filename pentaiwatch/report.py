@@ -11,7 +11,7 @@ import json
 import os
 import re
 
-from . import csp
+from . import csp, frameworks
 
 START_METHOD_TEXT = {
     "zeek_ts": "Zeek ts (always the session start)",
@@ -225,8 +225,34 @@ def _coverage_lines(rows: list[dict]) -> list[str]:
     lines = ["### What could be checked", "",
              "A detector that could not run on this data found nothing because it could not look. "
              "Not checked or partly checked is not a clean bill.", "",
-             "| Detector | Coverage | Why |", "|---|---|---|"]
-    lines += [f"| {r['detector']} | {r['status'].capitalize()} | {r['detail']} |" for r in rows]
+             "| Detector | Coverage | Why | MITRE techniques |", "|---|---|---|---|"]
+    lines += [f"| {r['detector']} | {r['status'].capitalize()} | {r['detail']} | "
+              f"{', '.join(r.get('techniques') or [])} |" for r in rows]
+    return lines + [""] + _framework_lines(rows)
+
+
+def _framework_lines(rows: list[dict]) -> list[str]:
+    """The MITRE ATT&CK and ATLAS technique each detector is labelled with, and how sure the label is."""
+    lines = ["### MITRE ATT&CK and ATLAS labels", "",
+             "Labels for filing what this report found under the framework your team reports in. They change "
+             "nothing about what is flagged. ATT&CK names the network behaviour; ATLAS names what is specific to "
+             "an AI agent doing it. *Direct* means the detector sees the technique itself. *Possible* means the "
+             "behaviour is consistent with it and connection logs cannot confirm it: whether an agent or a person "
+             "chose the next step is never in a log.", "",
+             "| Detector | Technique | Tactic | Fit | Why this label |", "|---|---|---|---|---|"]
+    seen: set[str] = set()
+    for r in rows:
+        for key in frameworks.keys_for(r["detector"]):
+            if key in seen:
+                continue
+            seen.add(key)
+            name = frameworks.DETECTORS[key][0]
+            for lab in frameworks.labels()[key]:
+                lines.append(f"| {name} | {lab['id']} {lab['name']} "
+                             f"({frameworks.FRAMEWORKS[lab['framework']]}) | {lab['tactic']} | "
+                             f"{lab['fit'].capitalize()} | {lab['why']} |")
+            if key in frameworks.reasons():
+                lines.append(f"| {name} | none | | | {frameworks.reasons()[key]} |")
     return lines + [""]
 
 
@@ -623,6 +649,7 @@ def _finding_lines(f: dict, st: dict, map_file: str = "", timeline: bool = False
         lines.append(f"| Agentic tool user agent | {'; '.join(_cell(u) for u in f['user_agents'])} |")
     if f.get("nonstop"):
         lines.append(f"| No overnight break | {_nonstop_text(f['nonstop'])} |")
+    lines.append("| MITRE techniques | " + "; ".join(frameworks.text(lab) for lab in frameworks.finding_labels()) + " |")
     if f.get("notes"):
         lines.append(f"| Notes | {' '.join(f['notes'])} |")
     if map_file:

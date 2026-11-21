@@ -64,7 +64,7 @@ import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 
-from . import engine
+from . import engine, frameworks
 from .config import Config
 from .knownbad import KnownBad
 from .netmap import NetMap
@@ -494,6 +494,8 @@ class Coverage:
     detector: str
     status: str
     detail: str
+    # MITRE ATT&CK and ATLAS technique ids this detector is labelled with (frameworks.csv); labels only
+    techniques: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -2095,6 +2097,8 @@ def _coverage(con, cfg: Config, out: Detection) -> list[Coverage]:
                          else "beacon.check is off"))
     rows.append(Coverage("Outbound to attacker infrastructure", "checked" if cfg.outbound.check else "not checked",
                          "internal hosts' sessions out" if cfg.outbound.check else "outbound.check is off"))
+    for row in rows:
+        row.techniques = frameworks.ids_for(row.detector)
     return rows
 
 
