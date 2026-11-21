@@ -156,11 +156,30 @@ writes the tests' sample logs into `demo/input/`, analyzes them and leaves
 | File | What it does |
 |---|---|
 | `network_map.csv` | Your address ranges with names (`cidr,name,type`). Every range in it counts as internal, and the names appear in the report. Without it, RFC 1918 ranges are internal. |
-| `known_scanners.csv` | Sources that are never flagged (`address,name`): your own scanners, attack-surface services, a red team you hired. |
+| `known_scanners.csv` | Sources you expect (`address,name,owner,expires,scope`): your own scanners, attack-surface services, a red team you hired. A row with only an address and a name is never flagged; a row with an owner, an expiry or a scope is an [authorization](#authorized-testing). |
 | `known_bad.csv` | Attacker addresses to flag on sight (`address,name,confidence,reference`; an address, a CIDR range or `first-last`). Added to the bundled list described under [Published attacker addresses](#published-attacker-addresses). |
 | `pentaiwatch.json` | Settings you want to change. Every threshold is a setting. |
 
 Each can also be given on the command line: `--network-map`, `--known-scanners`, `--known-bad`, `--config`.
+
+### Authorized testing
+
+A row in `known_scanners.csv` with only an address and a name leaves that source out of the scoring
+entirely, and the report counts what it left out. For a red team or a penetration test, say more:
+
+    address,name,owner,expires,scope
+    203.0.113.7,Q4 penetration test,Acme Security (J. Doe),2026-12-15,10.50.1.0/24 10.50.2.10
+
+A row with an owner, an expiry date or a scope is an authorization. The source is scored like any
+other, and what it would have been flagged or listed for (a finding, a published-address match,
+fixed-interval repetition, high-rate repeated connections) is listed under *Authorized activity*
+instead, with the owner, the expiry and the scope, so you can check that the owner expected it.
+It is covered only when every one of its scored sessions went to a host in the scope (any host
+when no scope is given) and began no later than the expiry (the end of that day, UTC; or a date
+and time). Anything else is flagged as usual, with a note saying the authorization did not cover
+it and why: a test that ran past its window or touched a host it was not cleared for is worth a
+look. Without a header row the columns are in the order above; scope entries are addresses or
+ranges separated by spaces or `;`. Rotating sources are not changed by an authorization.
 
 ### Published attacker addresses
 

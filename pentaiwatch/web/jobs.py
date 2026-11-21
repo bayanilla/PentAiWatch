@@ -75,6 +75,10 @@ def summary(res: dict) -> dict:
                            "regular": v.get("status") == "regular"}
                           for v in res["detection"].get("spray_sources") or []]
                        + _rotation_entries(res)
+                       + [{"source": a["source"], "level": None, "label": f"{a['name'] or 'authorized'}"
+                           + (f" ({a['owner']})" if a["owner"] else "") + f": would have been {', '.join(a['behaviours'])}",
+                           "hosts": a["hosts"], "timeline": False, "tag": "Authorized", "lead": True, "authorized": True}
+                          for a in res["detection"].get("authorized") or []]
                        + [{"source": c["host"], "level": None, "label": f"reached {c['destination']} "
                            f"({c['name'] or 'published address'}), {c['sessions']:,} sessions",
                            "hosts": 1, "timeline": False, "tag": "Reached attacker"}
