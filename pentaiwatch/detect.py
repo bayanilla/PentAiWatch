@@ -349,6 +349,26 @@ class C2Hint:
 
 
 @dataclass
+class Callback:
+    """An internal host's sessions out, on the default port of an agentic framework's own server, to
+    an outside address that had already connected in. A hint only: it never flags."""
+    host: str
+    network: str
+    destination: str
+    port: int
+    tool: str                    # whose default port it is
+    sessions: int
+    answered: int
+    first: str
+    last: str
+    inbound_first: str           # when the address first connected in to one of your hosts
+    inbound_sessions: int        # its inbound sessions in the lookback
+    log_sources: list[str]
+    # what the address is in this report: "finding", "lead" or '' (neither)
+    source_status: str = ""
+
+
+@dataclass
 class SteadySource:
     """A source with fixed-interval repetition that is not a finding: a lead, or flagged when backed."""
     source: str
@@ -424,6 +444,10 @@ class Detection:
     rotation_unchecked: int = 0
     outbound_contacts: list[OutboundContact] = field(default_factory=list)
     c2_hints: list[C2Hint] = field(default_factory=list)
+    # calls back to a source on an agentic framework's own port (hints), most answered first, and how
+    # many there are in all (the list is capped)
+    callbacks: list[Callback] = field(default_factory=list)
+    callbacks_total: int = 0
     warnings: list[str] = field(default_factory=list)
     lookback_start: str | None = None
     lookback_end: str | None = None
@@ -474,6 +498,7 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
         bad = _classify_addresses(con, cfg)
         if cfg.outbound.check:
             out.outbound_contacts, out.c2_hints = _outbound(con, cfg, bad, start, nm)
+            out.callbacks, out.callbacks_total = _callbacks(con, cfg, bad, start, nm)
         _common_sessions(con, cfg, start)
         out.inbound_sessions, out.outside_sources = con.execute(
             "SELECT count(*), count(DISTINCT src_ip) FROM pw_sessions").fetchone()
@@ -539,6 +564,7 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
             out.spray_sources.sort(key=lambda v: v.status == "regular")
             out.login_sources.sort(key=lambda v: v.status == "regular")
         _authorize(con, cfg, out)
+        _callback_status(out)
         out.coverage = _coverage(con, cfg, out)
         listed_but_allowed = sorted(ip for ip in bad if ip in _allowed(con))
         if listed_but_allowed:
@@ -602,6 +628,10 @@ def _outbound(con, cfg: Config, bad: dict[str, dict], start: datetime,
     control port (``outbound.c2_ports``) on any other outside address. A destination on the
     allowlist or in known_scanners.csv is left out, as it is for sources."""
     c2 = {port: tool for tool, ports in cfg.outbound.c2_ports.items() for port in ports}
+    named = dict(c2)             # what a contact's ports are named after: the tools' own ports as well
+    for tool, ports in cfg.outbound.tool_ports.items():
+        for port in ports:
+            named.setdefault(port, tool)
     args = {"zeek_failed": list(cfg.probing.zeek_failed_states),
             "zeek_answered": list(cfg.narrowing.zeek_answered_states),
             "zeek_icmp": bool(cfg.probing.zeek_icmp_by_reply),
@@ -629,7 +659,8 @@ def _outbound(con, cfg: Config, bad: dict[str, dict], start: datetime,
             reference=entry["reference"], list_name=entry["list_name"], sessions=int(n), answered=int(answered),
             ports=[f"{p}/{pr}" if p is not None else pr for p, pr, _ in ports[:MAX_OUTBOUND_PORTS]],
             first=_iso(first), last=_iso(last), log_sources=sorted(sensors),
-            c2=list(dict.fromkeys(c2[p] for p, pr, _ in ports if pr == "tcp" and p in c2))))
+            c2=list(dict.fromkeys(named.get(p) or _range_tool(cfg, p) for p, pr, _ in ports
+                                  if pr == "tcp" and (p in named or _range_tool(cfg, p))))))
     hints = [C2Hint(host=host, network=nm.name(host), destination=dest, port=int(port), tool=c2[port],
                     sessions=int(n), answered=int(answered), first=_iso(first), last=_iso(last),
                     log_sources=sorted(sensors))
@@ -642,6 +673,69 @@ def _outbound(con, cfg: Config, bad: dict[str, dict], start: datetime,
     contacts.sort(key=lambda c: (rank.get(c.confidence, 3), -c.answered, -c.sessions, c.host, c.destination))
     hints.sort(key=lambda h: (-h.answered, -h.sessions, h.host, h.destination))
     return contacts, hints
+
+
+MAX_CALLBACKS = 50
+
+
+def _range_tool(cfg: Config, port) -> str:
+    """The tool whose port range (``outbound.tool_port_ranges``) holds ``port``, '' when none does."""
+    for tool, (lo, hi) in cfg.outbound.tool_port_ranges.items():
+        if port is not None and lo <= port <= hi:
+            return tool
+    return ""
+
+
+def _callbacks(con, cfg: Config, bad: dict[str, dict], start: datetime, nm: NetMap) -> tuple[list[Callback], int]:
+    """Sessions since ``start`` from an internal host out to an outside address on the default port
+    of an agentic framework's own server (``outbound.tool_ports`` and ``tool_port_ranges``), where
+    that address had a session IN to an internal host at or before the session out: per (host,
+    address, port). A published attacker address is left out (it is a contact already), and so is a
+    destination on the allowlist or in known_scanners.csv. Returns (the first MAX_CALLBACKS, most
+    answered first; how many there are)."""
+    tools = {port: tool for tool, ports in cfg.outbound.tool_ports.items() for port in ports}
+    ranges = [(int(lo), int(hi)) for lo, hi in cfg.outbound.tool_port_ranges.values()]
+    if not tools and not ranges:
+        return [], 0
+    in_range = "".join(f" OR f.dst_port BETWEEN {lo} AND {hi}" for lo, hi in ranges)
+    rows = con.execute(f"""
+        WITH came_in AS (
+            SELECT f.src_ip AS ip, min(f.ts) AS first_in, count(*) AS n
+            FROM flows f JOIN pw_ip s ON s.ip = f.src_ip JOIN pw_ip d ON d.ip = f.dst_ip
+            WHERE NOT s.internal AND NOT s.allowed AND d.internal AND f.ts IS NOT NULL AND f.ts >= $start
+            GROUP BY 1)
+        SELECT f.src_ip, f.dst_ip, f.dst_port, count(*) AS n,
+               count(*) FILTER ({_OUTCOME_SQL} = 'answered') AS answered, min(f.ts), max(f.ts),
+               list(DISTINCT f.sensor), any_value(c.first_in), any_value(c.n)
+        FROM flows f JOIN pw_ip s ON s.ip = f.src_ip JOIN pw_ip d ON d.ip = f.dst_ip
+             JOIN came_in c ON c.ip = f.dst_ip
+        WHERE s.internal AND NOT d.internal AND NOT d.allowed AND f.ts IS NOT NULL AND f.ts >= $start
+          AND f.ts >= c.first_in AND f.proto = 'tcp' AND NOT list_contains($bad, f.dst_ip)
+          AND (list_contains($tools, f.dst_port){in_range})
+        GROUP BY 1, 2, 3 ORDER BY answered DESC, n DESC, 1, 2, 3""",
+                       {"zeek_failed": list(cfg.probing.zeek_failed_states),
+                        "zeek_answered": list(cfg.narrowing.zeek_answered_states),
+                        "zeek_icmp": bool(cfg.probing.zeek_icmp_by_reply),
+                        "pa_failed_packets": int(cfg.paloalto.failed_max_packets_received),
+                        "pa_answered_bytes": int(cfg.paloalto.answered_min_bytes_received), "start": start,
+                        "bad": sorted(bad), "tools": sorted(tools)}).fetchall()
+    return [Callback(host=host, network=nm.name(host), destination=dest, port=int(port),
+                     tool=tools.get(port) or _range_tool(cfg, port), sessions=int(n), answered=int(answered),
+                     first=_iso(first), last=_iso(last), inbound_first=_iso(first_in), inbound_sessions=int(n_in),
+                     log_sources=sorted(sensors))
+            for host, dest, port, n, answered, first, last, sensors, first_in, n_in in rows[:MAX_CALLBACKS]], len(rows)
+
+
+def _callback_status(out: Detection) -> None:
+    """Say on each call back what the address it went to is in this report."""
+    findings = {f.source for f in out.findings}
+    leads = ({v.source for v in out.steady_sources} | {w.source for w in out.spray_sources}
+             | {x.source for x in out.login_sources}
+             | {ip for g in out.rotations for ip in [g.sweeper] + [j.source for j in g.joiners]}
+             | {ip for g in out.shared_sweeps for ip in g.sweepers + [x for r in g.returns for x in r.sources]})
+    for c in out.callbacks:
+        c.source_status = "finding" if c.destination in findings else "lead" if c.destination in leads else ""
+    out.callbacks.sort(key=lambda c: ({"finding": 0, "lead": 1}.get(c.source_status, 2), -c.answered, -c.sessions))
 
 
 # -- 2. the common session shape ------------------------------------------------------------

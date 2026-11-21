@@ -202,11 +202,27 @@ class Outbound:
     published attacker addresses is flagged (the bundled list and your known_bad.csv). A session out
     to a command-and-control port below, to any outside address, is named as a hint: these ports
     are the defaults of the tools the reporting found on ARTEX hosts, but anything can listen on
-    them, so a hint never flags on its own."""
+    them, so a hint never flags on its own.
+
+    Calls back: the agentic frameworks' own servers listen on default ports too (``tool_ports``, and
+    ``tool_port_ranges`` for a first and last port), and the reporting says a compromised host calls
+    back to the operator's server on them. Ordinary services use these ports far more often than the
+    command-and-control ones, so a session out on one is named only when the outside address had
+    already connected IN to one of your hosts before it: a call back to a source. It is a hint and
+    flags nothing."""
     check: bool = True
     c2_ports: dict[str, list[int]] = field(
         default_factory=lambda: {"Cobalt Strike teamserver": [50050], "Adaptix C2": [4321]},
         metadata={"kind": "targets"})
+    # Default listener ports of the frameworks' own servers (Threat Landscape, 10 Nov 2026; Elastic
+    # Security Labs, 13 Nov 2026).
+    tool_ports: dict[str, list[int]] = field(
+        default_factory=lambda: {"ARTEX console": [8787], "Cairn server": [8000], "HexStrike AI server": [8888]},
+        metadata={"kind": "targets"})
+    # First and last port of a range: compromised hosts connect to a PentAGI host on TCP 28000 to
+    # 29999 (Elastic); its worker ports are bound in 28000 to 30000 (Threat Landscape).
+    tool_port_ranges: dict[str, list[int]] = field(
+        default_factory=lambda: {"PentAGI worker": [28000, 30000]}, metadata={"kind": "targets"})
 
 
 # Kinds of service the ARTEX and CyberStrikeAI reporting names as what the agents went for, by TCP or
@@ -491,10 +507,16 @@ def check(cfg: Config, name: str = "settings") -> None:
     if pa.answered_min_bytes_received < 1:
         raise UserError(f"{name}: paloalto.answered_min_bytes_received must be 1 or more: a session with "
                         "nothing back was not answered")
-    for label, ports in cfg.outbound.c2_ports.items():
-        for port in ports:
-            if not 1 <= port <= 65535:
-                raise UserError(f"{name}: outbound.c2_ports.{label}: {port} is not a port number (1 to 65535)")
+    for key, group in (("c2_ports", cfg.outbound.c2_ports), ("tool_ports", cfg.outbound.tool_ports),
+                       ("tool_port_ranges", cfg.outbound.tool_port_ranges)):
+        for label, ports in group.items():
+            for port in ports:
+                if not 1 <= port <= 65535:
+                    raise UserError(f"{name}: outbound.{key}.{label}: {port} is not a port number (1 to 65535)")
+    for label, ports in cfg.outbound.tool_port_ranges.items():
+        if len(ports) != 2 or ports[0] > ports[1]:
+            raise UserError(f"{name}: outbound.tool_port_ranges.{label} must be a first and a last port, "
+                            "such as [28000, 29999]")
     seen: dict[int, str] = {}
     for label, ports in cfg.targets.items():
         for port in ports:
