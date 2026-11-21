@@ -241,6 +241,19 @@ class Beacon:
     max_jitter: float = 0.10             # standard deviation of the gaps over their mean
 
 
+@dataclass
+class Nonstop:
+    """No overnight break: a source that stays active for most of a day or longer with no break as
+    long as a night's, or even a meal's. An agent does not sleep: AWS watched Cairn agents work one
+    target for about 16 hours in 148 sequential actions, and Unit 42 saw operations run from 20
+    minutes to more than 50 hours. A monitor or an integration runs around the clock too, so this
+    never flags a source and never backs a lead. It is named, as extra evidence, on a source that is
+    already a finding, a lead or a published address. Read from any session time."""
+    check: bool = True
+    min_hours: float = 16                # a stretch of activity at least this long ...
+    max_quiet_hours: float = 2           # ... in which no gap between two sessions is longer than this
+
+
 # Kinds of service the ARTEX and CyberStrikeAI reporting names as what the agents went for, by TCP or
 # UDP port. A flagged source's services on these ports are named in the report; they do not change
 # whether it is flagged. Port 443 is left out: too much else answers on it to name anything.
@@ -345,6 +358,7 @@ class Config:
     shared_sweep: SharedSweep = field(default_factory=SharedSweep)
     outbound: Outbound = field(default_factory=Outbound)
     beacon: Beacon = field(default_factory=Beacon)
+    nonstop: Nonstop = field(default_factory=Nonstop)
     # Named kinds of target: name -> ports. Your names are added; giving a default name replaces its
     # ports, and an empty list drops it.
     targets: dict[str, list[int]] = field(
@@ -465,7 +479,9 @@ def check(cfg: Config, name: str = "settings") -> None:
                 "timing.pause_max_seconds": cfg.timing.pause_max_seconds,
                 "timing.min_cycles": cfg.timing.min_cycles,
                 "steady.max_gap_seconds": cfg.steady.max_gap_seconds,
-                "beacon.max_gap_seconds": cfg.beacon.max_gap_seconds}
+                "beacon.max_gap_seconds": cfg.beacon.max_gap_seconds,
+                "nonstop.min_hours": cfg.nonstop.min_hours,
+                "nonstop.max_quiet_hours": cfg.nonstop.max_quiet_hours}
     for key, value in positive.items():
         if not value > 0:
             raise UserError(f"{name}: {key} must be more than 0")
@@ -489,6 +505,8 @@ def check(cfg: Config, name: str = "settings") -> None:
     if cfg.beacon.min_sessions < 3:
         raise UserError(f"{name}: beacon.min_sessions must be 3 or more: two sessions have one gap, which is "
                         "always even")
+    if cfg.nonstop.max_quiet_hours >= cfg.nonstop.min_hours:
+        raise UserError(f"{name}: nonstop.max_quiet_hours must be less than nonstop.min_hours")
     if cfg.parallel.min_services < 2 or cfg.parallel.min_bursts < 1:
         raise UserError(f"{name}: parallel.min_services must be 2 or more, and parallel.min_bursts 1 or more")
     if min(cfg.spray.min_per_minute, cfg.spray.min_minutes, cfg.spray.max_service_sources) < 1:

@@ -351,6 +351,20 @@ address, or a finding or a flagged lead in the same report, or the port is a com
 or agentic-tool port. The 50 with the most sessions are listed. A check-in slower than one every
 10 seconds, or one with jitter, is not seen. `"beacon": {"check": false}` turns this off.
 
+### No overnight break
+
+An agent does not sleep. AWS watched Cairn agents work one target for about 16 hours in 148
+sequential actions, and Unit 42 saw operations run from 20 minutes to more than 50 hours. When a
+source that is already a finding, a lead or a published address stayed active for
+`nonstop.min_hours` (16) or more, with no gap between two sessions longer than
+`nonstop.max_quiet_hours` (2), the report says so beside it: how long, from when to when, how many
+sessions and the longest gap.
+
+This is extra evidence and nothing more. A monitor, a health check or an integration runs around
+the clock too, so it never flags a source and never turns a lead into a flag. The data must cover
+16 hours for it to be seen; *What could be checked* says when it does not.
+`"nonstop": {"check": false}` turns it off.
+
 ### Named targets
 
 The ARTEX and CyberStrikeAI reporting says what the agents went for: FortiGate and other firewall
@@ -467,6 +481,11 @@ first is used, a warning names the others, and `--config` settles it.
     "min_sessions": 60,
     "max_gap_seconds": 10,
     "max_jitter": 0.1
+  },
+  "nonstop": {
+    "check": true,
+    "min_hours": 16,
+    "max_quiet_hours": 2
   },
   "targets": {
     "Edge device admin or VPN": [541, 4443, 8443, 9443, 10443],

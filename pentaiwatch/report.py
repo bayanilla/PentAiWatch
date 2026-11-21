@@ -161,7 +161,7 @@ def _known_lines(known: list[dict]) -> list[str]:
         more = f" and {k['services_total'] - len(k['services']):,} more" if k["services_total"] > len(k["services"]) else ""
         lines.append(f"| {k['source']} | {_published(k)} | {k['sessions']:,} ({k['answered']:,} answered) | "
                      f"{k['hosts']:,} | {', '.join(k['services'])}{more}{_targets_note(k)} | {_when(k['first_seen'])} to "
-                     f"{_when(k['last_seen'])} |{_auth_note(k)}")
+                     f"{_when(k['last_seen'])}{_nonstop_note(k)} |{_auth_note(k)}")
     return lines + [""]
 
 
@@ -180,6 +180,25 @@ def _coverage_lines(rows: list[dict]) -> list[str]:
 
 def _is_auth(entry: dict) -> bool:
     return bool(entry.get("owner") or entry.get("expires") or entry.get("scope"))
+
+
+def _nonstop_text(n: dict) -> str:
+    return (f"active for {n['hours']:g} hours, {_when(n['first'])} to {_when(n['last'])}, {n['sessions']:,} sessions "
+            f"with no gap longer than {n['longest_gap_minutes']:g} minutes")
+
+
+def _nonstop_note(item: dict) -> str:
+    """A cell's tail: the source's stretch of activity with no long break, when it has one."""
+    return f"; no overnight break: {_nonstop_text(item['nonstop'])}" if item.get("nonstop") else ""
+
+
+def _nonstop_line(st: dict) -> str:
+    n = st.get("nonstop") or {}
+    if not n.get("check"):
+        return "- No overnight break: not checked (nonstop.check is off)."
+    return (f"- No overnight break (extra evidence, never a flag): a finding, lead or published address whose source "
+            f"stayed active for {n['min_hours']:g}+ hours with no gap between two sessions longer than "
+            f"{n['max_quiet_hours']:g} hours.")
 
 
 def _auth_note(item: dict) -> str:
@@ -335,7 +354,7 @@ def _login_lines(items: list[dict], st: dict) -> list[str]:
     for v in items:
         more = f"; and {v['runs_total'] - len(v['runs']):,} more" if v["runs_total"] > len(v["runs"]) else ""
         lines.append(f"| {v['source']} | {_status(v)} | {_all([SOURCE_TEXT.get(x, x) for x in v['log_sources']])} | "
-                     f"{'; '.join(_login_run(r) for r in v['runs'])}{more}{_auth_note(v)} |")
+                     f"{'; '.join(_login_run(r) for r in v['runs'])}{more}{_nonstop_note(v)}{_auth_note(v)} |")
     return lines + [""]
 
 
@@ -356,7 +375,7 @@ def _spray_lines(spray: list[dict], st: dict) -> list[str]:
     for v in spray:
         more = f"; and {v['runs_total'] - len(v['runs']):,} more" if v["runs_total"] > len(v["runs"]) else ""
         lines.append(f"| {v['source']} | {_status(v)} | {_all([SOURCE_TEXT.get(x, x) for x in v['log_sources']])} | "
-                     f"{'; '.join(_spray_run(r) for r in v['runs'])}{more}{_auth_note(v)} |")
+                     f"{'; '.join(_spray_run(r) for r in v['runs'])}{more}{_nonstop_note(v)}{_auth_note(v)} |")
     return lines + [""]
 
 
@@ -384,7 +403,7 @@ def _steady_lines(steady: list[dict], st: dict) -> list[str]:
     for v in steady:
         more = f"; and {v['runs_total'] - len(v['runs']):,} more" if v["runs_total"] > len(v["runs"]) else ""
         lines.append(f"| {v['source']} | {_status(v)} | {_all([SOURCE_TEXT.get(x, x) for x in v['log_sources']])} | "
-                     f"{'; '.join(_steady_run(r) for r in v['runs'])}{more}{_auth_note(v)} |")
+                     f"{'; '.join(_steady_run(r) for r in v['runs'])}{more}{_nonstop_note(v)}{_auth_note(v)} |")
     return lines + [""]
 
 
@@ -548,6 +567,8 @@ def _finding_lines(f: dict, st: dict, map_file: str = "", timeline: bool = False
         lines.append(f"| High-rate repeated connections | {'; '.join(_spray_run(r) for r in f['spray'])} |")
     if f.get("login"):
         lines.append(f"| Repeated failed-login pattern | {'; '.join(_login_run(r) for r in f['login'])} |")
+    if f.get("nonstop"):
+        lines.append(f"| No overnight break | {_nonstop_text(f['nonstop'])} |")
     if f.get("notes"):
         lines.append(f"| Notes | {' '.join(f['notes'])} |")
     if map_file:
@@ -672,6 +693,9 @@ def markdown(res: dict) -> str:
               "- **Several attack paths at once** raises confidence in a Level 1 or Tier 0 finding: once it "
               "narrowed, the source's bursts worked more than one service, taking turns between them, as an "
               "agent running attack paths side by side does. It never flags a source on its own.",
+              "- **No overnight break** is extra evidence on a finding, a lead or a published address: the source "
+              "stayed active for most of a day or longer with no break a person would take, as an agent that does "
+              "not sleep does, and as a monitor does. It never flags a source and never turns a lead into a flag.",
               "- **Rotating sources.** One address sweeps and other, new addresses come straight back to what "
               "it found, as an operator rotating through proxies does. A lead on its own; flagged as one "
               "campaign when the sweeping address is a finding or an address in it also shows fixed-interval "
@@ -747,6 +771,7 @@ def markdown(res: dict) -> str:
               _shared_line(st),
               _outbound_line(st),
               _beacon_line(st),
+              _nonstop_line(st),
               _targets_line(st),
               f"- Never flagged: {', '.join(st['allowlist'] + [k['cidr'] for k in res['known_scanners'] if not _is_auth(k)]) or 'nothing listed'}."
               + (f" That left out {_n(det['never_flagged_sources'], 'outside source')} with "
