@@ -85,7 +85,17 @@ class BundledSamples(unittest.TestCase):
                          {s: (1, [p]) for s, p in EXPECTED[ARTEX]["level_1"].items()})
         res = self.results[CYBERSTRIKE, "paloalto_elapsed_only"]
         self.assertEqual(res["detection"]["findings"], [])
+        # the brute force still shows the repeated failed-login pattern, and its sweep flags it
+        self.assertEqual([(v["source"], v["status"], v["backed_by"]) for v in res["detection"]["login_sources"]],
+                         [("212.11.64.250", "flagged", ["sweep"])])
         self.assertTrue(any("fixed-interval cadence cannot be checked" in w for w in res["warnings"]))
+
+    def test_the_sso_password_spray_is_a_flagged_failed_login_pattern(self):
+        for variant in TIMED + ("paloalto_elapsed_only",):
+            with self.subTest(variant=variant):
+                [v] = self.results[ARTEX, variant]["detection"]["login_sources"]
+                self.assertEqual((v["source"], v["status"], v["backed_by"]), ("144.172.64.60", "flagged", ["sweep"]))
+                self.assertEqual([r["service"] for r in v["runs"]], ["10.50.1.11:443/tcp"])
 
     def test_with_no_start_time_every_narrowing_source_is_tier_0(self):
         for name, want in EXPECTED.items():

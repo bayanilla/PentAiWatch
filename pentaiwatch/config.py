@@ -116,6 +116,26 @@ class Spray:
 
 
 @dataclass
+class LoginSpray:
+    """Repeated failed-login pattern: one source keeps sending short sessions to one TCP service, minute
+    after minute for a quarter of an hour or more, and the service answers each with a small reply of
+    nearly the same size, as a login page refusing one password after another does (ARTEX sprayed
+    an SSO page at about one attempt a second for 40 minutes). A connection log cannot see accounts
+    or passwords, so this reads the shape: sustained, mostly answered, small same-size replies, and
+    most of the service's traffic in those minutes. Unlike high-rate repeated connections it also
+    looks at a public service, such as your SSO or webmail, because that is where sprays go. A
+    monitor or an integration that posts small requests all day looks the same, so on its own this
+    is a lead; a sweep, or another behaviour of the source on another service, flags it."""
+    check: bool = True
+    min_per_minute: int = 20             # sessions in a minute that count it
+    min_minutes: int = 15                # such minutes in one stretch (gaps of up to 2 minutes allowed)
+    min_answered_share: float = 0.50     # share of the stretch's sessions that completed
+    max_reply_bytes: int = 16384         # median bytes back per completed session (a refusal page, not a download)
+    max_reply_spread: float = 0.6        # (90th - 10th percentile of those bytes) / their median
+    min_service_share: float = 0.5       # its share of all sessions to the service in the stretch
+
+
+@dataclass
 class Parallel:
     """Several attack paths at once: once a flagged source has narrowed, its bursts work more than one
     service, switching back and forth between them, as an agent that runs several attack paths side by
@@ -286,6 +306,7 @@ class Config:
     timing: Timing = field(default_factory=Timing)
     steady: Steady = field(default_factory=Steady)
     spray: Spray = field(default_factory=Spray)
+    login_spray: LoginSpray = field(default_factory=LoginSpray)
     parallel: Parallel = field(default_factory=Parallel)
     rotation: Rotation = field(default_factory=Rotation)
     baseline: Baseline = field(default_factory=Baseline)
@@ -421,7 +442,9 @@ def check(cfg: Config, name: str = "settings") -> None:
               "timing.min_timed_share": cfg.timing.min_timed_share,
               "steady.max_jitter": cfg.steady.max_jitter,
               "spray.min_answered_share": cfg.spray.min_answered_share,
-              "shared_sweep.min_split_share": cfg.shared_sweep.min_split_share}
+              "shared_sweep.min_split_share": cfg.shared_sweep.min_split_share,
+              "login_spray.min_answered_share": cfg.login_spray.min_answered_share,
+              "login_spray.min_service_share": cfg.login_spray.min_service_share}
     for key, value in shares.items():
         if not 0 <= value <= 1:
             raise UserError(f"{name}: {key} must be between 0 and 1 (0.7 means 70%)")
@@ -434,6 +457,10 @@ def check(cfg: Config, name: str = "settings") -> None:
         raise UserError(f"{name}: spray.min_per_minute, spray.min_minutes and spray.max_service_sources must be 1 or more")
     if cfg.rotation.quiet_before_hours < 0:
         raise UserError(f"{name}: rotation.quiet_before_hours cannot be less than 0")
+    ls = cfg.login_spray
+    if min(ls.min_per_minute, ls.min_minutes, ls.max_reply_bytes) < 1 or ls.max_reply_spread < 0:
+        raise UserError(f"{name}: login_spray.min_per_minute, login_spray.min_minutes and login_spray.max_reply_bytes "
+                        "must be 1 or more, and login_spray.max_reply_spread 0 or more")
     if cfg.shared_sweep.min_sources < 2 or cfg.shared_sweep.min_probes_per_source < 1:
         raise UserError(f"{name}: shared_sweep.min_sources must be 2 or more, and shared_sweep.min_probes_per_source 1 or more")
     if cfg.baseline.before_hours < 0 or cfg.baseline.min_sessions < 1:

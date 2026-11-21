@@ -22,11 +22,15 @@ _STATE_SHAPE = {"S0": ("S", 0, 0, 1, 0), "REJ": ("Sr", 0, 0, 1, 1), "RSTOS0": ("
 
 
 def session(ts: float, src: str, dst: str, dport: int, state: str = "SF", sport: int | None = None,
-            proto: str = "tcp", duration: float = 0.4) -> dict:
-    """One session as a plain dict; ``ts`` is the START in epoch seconds."""
-    return {"ts": ts, "src": src, "dst": dst, "dport": dport, "state": state,
-            "sport": sport if sport is not None else 20000 + int(ts * 7 + dport) % 40000,
-            "proto": proto, "duration": duration}
+            proto: str = "tcp", duration: float = 0.4, rb: int | None = None) -> dict:
+    """One session as a plain dict; ``ts`` is the START in epoch seconds. ``rb``: the bytes the
+    responder sent, when the default for the state will not do."""
+    out = {"ts": ts, "src": src, "dst": dst, "dport": dport, "state": state,
+           "sport": sport if sport is not None else 20000 + int(ts * 7 + dport) % 40000,
+           "proto": proto, "duration": duration}
+    if rb is not None:
+        out["rb"] = rb
+    return out
 
 
 def ping(ts: float, src: str, dst: str, answered: bool = False, duration: float = 0.0) -> dict:
@@ -40,7 +44,8 @@ def _zeek_shape(s: dict) -> tuple:
     if s["proto"] == "icmp":
         back = bool(s.get("answered"))
         return "-", 56, 56 if back else 0, 1, 1 if back else 0
-    return _STATE_SHAPE.get(s["state"], ("S", 0, 0, 1, 0))
+    shape = _STATE_SHAPE.get(s["state"], ("S", 0, 0, 1, 0))
+    return shape if "rb" not in s else (shape[0], shape[1], s["rb"], shape[3], shape[4])
 
 
 def write_zeek_conn(path: str, sessions: list[dict]) -> str:
@@ -74,7 +79,10 @@ def _pa_shape(s: dict, denied) -> tuple[int, int, int]:
         return 74, 0, 0
     if s["proto"] == "icmp":
         return (98, 98, 1) if s.get("answered") else (98, 0, 0)
-    return _PA_SHAPE.get(s["state"], (74, 0, 0))
+    sent, back, pkts = _PA_SHAPE.get(s["state"], (74, 0, 0))
+    if "rb" in s and back:
+        back = s["rb"] + 60 * pkts               # the reply plus the packets' headers
+    return sent, back, pkts
 
 
 def _pa_app(s: dict, back: int) -> str:

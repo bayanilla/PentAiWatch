@@ -85,6 +85,7 @@ PATTERN_CADENCE = "fixed-interval cadence"
 BEHAVIOUR_SWEEP = "sweep"
 BEHAVIOUR_STEADY = "fixed-interval repetition"
 BEHAVIOUR_SPRAY = "high-rate repeated connections"
+BEHAVIOUR_LOGIN = "repeated failed-login pattern"
 
 
 def target_ports(cfg: Config) -> dict[int, str]:
@@ -162,6 +163,7 @@ class Finding:
     known: dict | None = None    # its entry in a list of published attacker addresses, if any
     steady: list[SteadyRun] = field(default_factory=list)   # fixed-interval repetition, if any
     spray: list[SprayRun] = field(default_factory=list)     # high-rate repeated connections, if any
+    login: list[LoginRun] = field(default_factory=list)     # the repeated failed-login pattern, if any
     targets: list[str] = field(default_factory=list)  # kinds of target among all the services it narrowed onto
     parallel: ParallelPaths | None = None   # several attack paths at once, if seen: higher confidence
     confidence: str = "standard"            # "higher" when several attack paths at once were seen
@@ -264,6 +266,36 @@ class SprayRun:
     last: str                    # end of the last such minute
     target: str = ""             # the kind of target the service is, '' when none
     regular_since: str = ""      # first session to this service, when the source repeated to it well before
+
+
+@dataclass
+class LoginRun:
+    """A stretch of short, small, same-size-reply sessions from a source to one TCP service."""
+    service: str                 # "host:port/proto"
+    minutes: int                 # minutes at the rate in the stretch
+    sessions: int
+    answered: int
+    peak_per_minute: int
+    reply_bytes: int             # median bytes back per completed session
+    reply_spread: float          # (90th - 10th percentile) / median of those bytes
+    service_share: float         # its share of all sessions to the service in the stretch
+    first: str
+    last: str
+    target: str = ""
+    regular_since: str = ""
+
+
+@dataclass
+class LoginSource:
+    """A source with the repeated failed-login pattern that is not a finding: a lead, or flagged when backed."""
+    source: str
+    log_sources: list[str]
+    runs: list[LoginRun]
+    runs_total: int
+    sessions: int
+    status: str = "lead"         # "flagged", "regular" or "lead", as for the other standalone behaviours
+    backed_by: list[str] = field(default_factory=list)
+    authorization: str = ""
 
 
 @dataclass
@@ -380,6 +412,7 @@ class Detection:
     known_sources: list[KnownSource] = field(default_factory=list)
     steady_sources: list[SteadySource] = field(default_factory=list)
     spray_sources: list[SpraySource] = field(default_factory=list)
+    login_sources: list[LoginSource] = field(default_factory=list)
     rotations: list[Rotation] = field(default_factory=list)
     shared_sweeps: list[SharedSweep] = field(default_factory=list)
     # per detector, how far the data let it work: a quiet detector that could not run is not a clean bill
@@ -492,11 +525,19 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
                             "SELECT count(*) FROM pw_sessions WHERE src_ip = ?", [src]).fetchone()[0]))
             for src, runs in sorted(spray.items(), key=lambda kv: (-kv[1][0].sessions, kv[0]))
             if src not in steady_only]
+        login = _login_spray(con, cfg) if cfg.login_spray.check else {}
+        for f in out.findings:
+            f.login = login.pop(f.source, [])
+        out.login_sources = [
+            LoginSource(source=src, log_sources=log_sources(con, src), runs=runs[:MAX_SPRAY_RUNS], runs_total=len(runs),
+                        sessions=int(con.execute("SELECT count(*) FROM pw_sessions WHERE src_ip = ?", [src]).fetchone()[0]))
+            for src, runs in sorted(login.items(), key=lambda kv: (-kv[1][0].sessions, kv[0]))]
         _backing(con, out, spray_any)
         if cfg.baseline.check:
             _regular(con, cfg, out)
             out.steady_sources.sort(key=lambda v: v.status == "regular")
             out.spray_sources.sort(key=lambda v: v.status == "regular")
+            out.login_sources.sort(key=lambda v: v.status == "regular")
         _authorize(con, cfg, out)
         out.coverage = _coverage(con, cfg, out)
         listed_but_allowed = sorted(ip for ip in bad if ip in _allowed(con))
@@ -1416,6 +1457,64 @@ def _cadence_unchecked(con, cfg: Config) -> list[str]:
             "firewall export with the session start time, or Zeek, settles it."]
 
 
+def _login_spray(con, cfg: Config) -> dict[str, list[LoginRun]]:
+    """Per source, its stretches of the repeated failed-login pattern (see config.LoginSpray): runs
+    of ``min_minutes`` or more minutes, no more than 2 minutes apart, each with ``min_per_minute`` or
+    more sessions to one TCP service; ``min_answered_share`` of the stretch's sessions completed; the
+    completed ones' replies small (median ``max_reply_bytes`` or less) and of nearly one size
+    (spread ``max_reply_spread`` or less); and ``min_service_share`` or more of all sessions to the
+    service in the stretch its own. Public services are NOT left out. Most sessions first."""
+    c = cfg.login_spray
+    rows = con.execute("""
+        WITH s AS (
+            SELECT p.src_ip, p.dst_ip, p.dst_port, p.start_ts, p.outcome, f.bytes_in,
+                   date_trunc('minute', p.start_ts) AS m
+            FROM pw_sessions p JOIN flows f ON f.seq = p.seq
+            WHERE p.proto = 'tcp' AND p.dst_port IS NOT NULL),
+        pm AS (SELECT src_ip, dst_ip, dst_port, m, count(*) AS n FROM s GROUP BY ALL HAVING count(*) >= $rate),
+        lagged AS (SELECT *, lag(m) OVER (PARTITION BY src_ip, dst_ip, dst_port ORDER BY m) AS prev FROM pm),
+        isl AS (
+            SELECT *, sum(CASE WHEN prev IS NULL OR m - prev > INTERVAL 3 MINUTE THEN 1 ELSE 0 END)
+                      OVER (PARTITION BY src_ip, dst_ip, dst_port ORDER BY m ROWS UNBOUNDED PRECEDING) AS run
+            FROM lagged),
+        runs AS (
+            SELECT src_ip, dst_ip, dst_port, run, count(*) AS minutes, max(n) AS peak, min(m) AS t0,
+                   max(m) + INTERVAL 1 MINUTE AS t1
+            FROM isl GROUP BY ALL HAVING count(*) >= $min_minutes),
+        stats AS (
+            SELECT r.src_ip, r.dst_ip, r.dst_port, r.run, r.minutes, r.peak, r.t0, r.t1, count(*) AS sessions,
+                   count(*) FILTER (s.outcome = 'answered') AS answered,
+                   median(s.bytes_in) FILTER (s.outcome = 'answered') AS med,
+                   quantile_cont(s.bytes_in, 0.9) FILTER (s.outcome = 'answered')
+                   - quantile_cont(s.bytes_in, 0.1) FILTER (s.outcome = 'answered') AS spread
+            FROM runs r JOIN s ON s.src_ip = r.src_ip AND s.dst_ip = r.dst_ip AND s.dst_port = r.dst_port
+                               AND s.start_ts >= r.t0 AND s.start_ts < r.t1
+            GROUP BY ALL),
+        everyone AS (
+            SELECT r.src_ip, r.dst_ip, r.dst_port, r.run, count(*) AS total
+            FROM runs r JOIN s ON s.dst_ip = r.dst_ip AND s.dst_port = r.dst_port
+                               AND s.start_ts >= r.t0 AND s.start_ts < r.t1
+            GROUP BY ALL)
+        SELECT t.src_ip, t.dst_ip, t.dst_port, t.minutes, t.sessions, t.answered, t.peak, t.med,
+               t.spread / t.med, t.sessions / e.total, t.t0, t.t1
+        FROM stats t JOIN everyone e USING (src_ip, dst_ip, dst_port, run)
+        WHERE t.answered >= $share * t.sessions AND t.med > 0 AND t.med <= $max_bytes
+          AND t.spread <= $max_spread * t.med AND t.sessions >= $svc_share * e.total
+        ORDER BY t.src_ip, t.sessions DESC, t.t0""",
+                       {"rate": int(c.min_per_minute), "min_minutes": int(c.min_minutes),
+                        "share": float(c.min_answered_share), "max_bytes": int(c.max_reply_bytes),
+                        "max_spread": float(c.max_reply_spread), "svc_share": float(c.min_service_share)}).fetchall()
+    out: dict[str, list[LoginRun]] = {}
+    tports = target_ports(cfg)
+    for src, host, port, minutes, n, answered, peak, med, spread, share, first, last in rows:
+        out.setdefault(src, []).append(LoginRun(
+            service=f"{host}:{port}/tcp", minutes=int(minutes), sessions=int(n), answered=int(answered),
+            peak_per_minute=int(peak), reply_bytes=int(med), reply_spread=round(float(spread), 2),
+            service_share=round(float(share), 2), first=_iso(first), last=_iso(last),
+            target=target_of(tports, port, "tcp")))
+    return out
+
+
 def _backing(con, out: Detection, spray_any: dict[str, list[SprayRun]] | None = None) -> None:
     """Set ``status`` and ``backed_by`` on the standalone behaviours: fixed-interval repetition,
     high-rate repeated connections and rotating sources. Each alone is a lead, because a health
@@ -1450,6 +1549,11 @@ def _backing(con, out: Detection, spray_any: dict[str, list[SprayRun]] | None = 
     for w in out.spray_sources:
         w.backed_by = backed(w.source, spray, steady, BEHAVIOUR_STEADY)
         w.status = "flagged" if w.backed_by else "lead"
+    for x in out.login_sources:
+        others = (steady.get(x.source, set()) | spray.get(x.source, set())) - {r.service for r in x.runs}
+        x.backed_by = ([BEHAVIOUR_SWEEP] if x.source in swept else []) + \
+            ([f"{BEHAVIOUR_STEADY} or {BEHAVIOUR_SPRAY} on another service"] if others else [])
+        x.status = "flagged" if x.backed_by else "lead"
     for g in out.rotations:
         g.backed_by = ((["the sweeping address is a finding"] if g.flagged else [])
                        + ([f"the sweeping address shows {BEHAVIOUR_STEADY}"] if g.sweeper in steady else [])
@@ -1474,6 +1578,8 @@ def _authorize(con, cfg: Config, out: Detection) -> None:
         kinds.setdefault(v.source, []).append(BEHAVIOUR_STEADY)
     for w in out.spray_sources:
         kinds.setdefault(w.source, []).append(BEHAVIOUR_SPRAY)
+    for x in out.login_sources:
+        kinds.setdefault(x.source, []).append(BEHAVIOUR_LOGIN)
     covered: set[str] = set()
     why: dict[str, str] = {}
     for src, behaviours in kinds.items():
@@ -1506,11 +1612,13 @@ def _authorize(con, cfg: Config, out: Detection) -> None:
     out.known_sources = [k for k in out.known_sources if k.source not in covered]
     out.steady_sources = [v for v in out.steady_sources if v.source not in covered]
     out.spray_sources = [w for w in out.spray_sources if w.source not in covered]
+    out.login_sources = [x for x in out.login_sources if x.source not in covered]
     for f in out.findings:
         if f.source in why:
             f.authorization = why[f.source]
             f.notes.append(why[f.source])
-    items: list[KnownSource | SteadySource | SpraySource] = [*out.known_sources, *out.steady_sources, *out.spray_sources]
+    items: list[KnownSource | SteadySource | SpraySource | LoginSource] = [
+        *out.known_sources, *out.steady_sources, *out.spray_sources, *out.login_sources]
     for item in items:
         if item.source in why:
             item.authorization = why[item.source]
@@ -1524,7 +1632,7 @@ def _regular(con, cfg: Config, out: Detection) -> None:
     source has been a client of it for that long. A health check that has run for days and a job
     that runs every day both are; yesterday's run is as regular as today's."""
     b = cfg.baseline
-    items: list[SteadySource | SpraySource] = [*out.steady_sources, *out.spray_sources]
+    items: list[SteadySource | SpraySource | LoginSource] = [*out.steady_sources, *out.spray_sources, *out.login_sources]
     for item in items:
         if item.status != "lead":
             continue
@@ -1584,6 +1692,9 @@ def _coverage(con, cfg: Config, out: Detection) -> list[Coverage]:
     b = share(logged, "have a logged start time; a start worked out from whole elapsed seconds is too coarse")
     b.detector = "Timing pattern b and fixed-interval repetition"
     rows += [a, b, Coverage("High-rate repeated connections", "checked", "minutes are counted on any session time")]
+    rows.append(Coverage("Repeated failed-login pattern", "checked" if cfg.login_spray.check else "not checked",
+                         "minutes and reply sizes are read from any log" if cfg.login_spray.check
+                         else "login_spray.check is off"))
     rows.append(Coverage("Rotating sources", "partly checked" if out.rotation_unchecked else "checked",
                          f"{out.rotation_unchecked:,} sweep(s) began less than {cfg.rotation.quiet_before_hours:g} hours "
                          "after the start of the data, so whether later addresses were new cannot be told"

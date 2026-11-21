@@ -284,6 +284,36 @@ def _spray_run(r: dict) -> str:
             f"{_when(r['last'])}" + _regular_since(r))
 
 
+def _login_run(r: dict) -> str:
+    kind = f" ({r['target']})" if r.get("target") else ""
+    return (f"{r['service']}{kind}: {r['sessions']:,} sessions in {r['minutes']:,} minutes, up to "
+            f"{r['peak_per_minute']:,} a minute, {r['answered']:,} completed with replies of about "
+            f"{r['reply_bytes']:,} bytes (spread {r['reply_spread']:.0%}), {r['service_share']:.0%} of the service's "
+            f"sessions then, {_when(r['first'])} to {_when(r['last'])}" + _regular_since(r))
+
+
+def _login_lines(items: list[dict], st: dict) -> list[str]:
+    """The sources with the repeated failed-login pattern that are not findings: flagged or leads."""
+    if not items:
+        return []
+    c = st["login_spray"]
+    lines = ["### Repeated failed-login pattern", "",
+             f"{_n(len(items), 'outside source')} kept sending short sessions to one service for "
+             f"{c['min_minutes']}+ minutes at {c['min_per_minute']}+ a minute, most of them answered with a small "
+             "reply of nearly the same size, and made up most of that service's traffic meanwhile. That is what "
+             "a login page refusing one password after another looks like (ARTEX sprayed an SSO page at about "
+             "one attempt a second for 40 minutes); a monitor or an integration posting small requests can look "
+             "the same. The connection log cannot see accounts or passwords: check that service's own log for "
+             "failed logins and how many accounts they named. On its own this is a lead; it is flagged when "
+             f"another behaviour of the same source backs it. {_regular_note(st)}", "",
+             "| Source | Status | Built from | Services |", "|---|---|---|---|"]
+    for v in items:
+        more = f"; and {v['runs_total'] - len(v['runs']):,} more" if v["runs_total"] > len(v["runs"]) else ""
+        lines.append(f"| {v['source']} | {_status(v)} | {_all([SOURCE_TEXT.get(x, x) for x in v['log_sources']])} | "
+                     f"{'; '.join(_login_run(r) for r in v['runs'])}{more}{_auth_note(v)} |")
+    return lines + [""]
+
+
 def _spray_lines(spray: list[dict], st: dict) -> list[str]:
     """The sources with high-rate repeated connections that are not findings: flagged or leads."""
     if not spray:
@@ -331,6 +361,17 @@ def _steady_lines(steady: list[dict], st: dict) -> list[str]:
         lines.append(f"| {v['source']} | {_status(v)} | {_all([SOURCE_TEXT.get(x, x) for x in v['log_sources']])} | "
                      f"{'; '.join(_steady_run(r) for r in v['runs'])}{more}{_auth_note(v)} |")
     return lines + [""]
+
+
+def _login_line(st: dict) -> str:
+    c = st.get("login_spray") or {}
+    if not c.get("check"):
+        return "- Repeated failed-login pattern: not checked (login_spray.check is off)."
+    return (f"- Repeated failed-login pattern (a lead on its own): {c['min_per_minute']}+ sessions a minute to one TCP "
+            f"service in {c['min_minutes']}+ minutes of one stretch (gaps of up to 2 minutes), "
+            f"{c['min_answered_share']:.0%}+ completed, completed replies of {c['max_reply_bytes']:,} bytes or less "
+            f"(median) varying by at most {c['max_reply_spread']:.0%}, and {c['min_service_share']:.0%}+ of the "
+            "service's sessions in the stretch. Public services count.")
 
 
 def _shared_line(st: dict) -> str:
@@ -441,6 +482,8 @@ def _finding_lines(f: dict, st: dict, map_file: str = "", timeline: bool = False
         lines.append(f"| Fixed-interval repetition | {'; '.join(_steady_run(r) for r in f['steady'])} |")
     if f.get("spray"):
         lines.append(f"| High-rate repeated connections | {'; '.join(_spray_run(r) for r in f['spray'])} |")
+    if f.get("login"):
+        lines.append(f"| Repeated failed-login pattern | {'; '.join(_login_run(r) for r in f['login'])} |")
     if f.get("notes"):
         lines.append(f"| Notes | {' '.join(f['notes'])} |")
     if map_file:
@@ -525,6 +568,7 @@ def markdown(res: dict) -> str:
                   "addresses that came back to what it found were new cannot be told; none was tied to it.", ""]
     lines += _steady_lines(det.get("steady_sources") or [], st)
     lines += _spray_lines(det.get("spray_sources") or [], st)
+    lines += _login_lines(det.get("login_sources") or [], st)
     lines += _authorized_lines(det.get("authorized") or [])
     if map_file:
         replay = (" Its Timeline replays a source's sessions in the order they started, with its bursts and "
@@ -544,6 +588,10 @@ def markdown(res: dict) -> str:
               "- **Fixed-interval repetition.** A source that hit one service over and over at an almost "
               "constant gap, as a scripted login brute force or a health check does. A lead on its own; flagged "
               "when a sweep or high-rate repeated connections from the same source back it.",
+              "- **Repeated failed-login pattern.** A source that kept sending short sessions to one service for "
+              "a quarter of an hour or more, answered with small replies of nearly one size, as a login page "
+              "refusing password after password does. A lead on its own; flagged when a sweep, or fixed-interval "
+              "or high-rate repetition on another service, from the same source backs it.",
               "- **High-rate repeated connections.** A source that sent a flood of completed connections to one "
               "service, minute after minute, as a password spray or a busy integration does. A lead on its own; "
               "flagged when a sweep or fixed-interval repetition from the same source backs it.",
@@ -613,6 +661,7 @@ def markdown(res: dict) -> str:
               f"- Fixed-interval repetition (timing pattern b, and a lead on its own): {st['steady']['min_sessions']}+ sessions in a row to one service, each "
               f"within {st['steady']['max_gap_seconds']:g} seconds of the last, gaps varying by at most "
               f"{st['steady']['max_jitter']:.0%} of their mean.",
+              _login_line(st),
               f"- High-rate repeated connections (a lead on its own): {st['spray']['min_per_minute']}+ sessions a minute to one TCP service in "
               f"{st['spray']['min_minutes']}+ minutes, {st['spray']['min_answered_share']:.0%}+ completed; services "
               f"more than {st['spray']['max_service_sources']} outside addresses used never count.",

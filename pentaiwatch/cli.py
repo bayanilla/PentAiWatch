@@ -67,14 +67,15 @@ def main(argv=None) -> int:
     rotations = res["detection"].get("rotations") or []
     flagged = lambda items: [x for x in items if x.get("status") == "flagged"]
     shared = res["detection"].get("shared_sweeps") or []
-    total = len({x["source"] for x in found + known + flagged(steady) + flagged(spray)}
+    logins = res["detection"].get("login_sources") or []
+    total = len({x["source"] for x in found + known + flagged(steady) + flagged(spray) + flagged(logins)}
                 | {ip for g in flagged(rotations) for ip in [g["sweeper"]] + [j["source"] for j in g["joiners"]]}
                 | {ip for g in flagged(shared) for r in g["returns"] for ip in r["sources"]})
-    regular = {x["source"] for x in steady + spray if x.get("status") == "regular"}
-    leads = len({x["source"] for x in steady + spray if x.get("status") == "lead"}
+    regular = {x["source"] for x in steady + spray + logins if x.get("status") == "regular"}
+    leads = len({x["source"] for x in steady + spray + logins if x.get("status") == "lead"}
                 | {g["sweeper"] for g in rotations if g.get("status") != "flagged"}
                 | {ip for g in shared if g.get("status") != "flagged" for r in g["returns"] for ip in r["sources"]})
-    regular -= {x["source"] for x in steady + spray if x.get("status") != "regular"}
+    regular -= {x["source"] for x in steady + spray + logins if x.get("status") != "regular"}
     authorized = len(res["detection"].get("authorized") or [])
     reached = len({c["host"] for c in res["detection"].get("outbound_contacts") or []})
     print(f"{res['sessions']:,} sessions read; {total} source{'' if total == 1 else 's'} flagged"
@@ -100,6 +101,10 @@ def main(argv=None) -> int:
         r = v["runs"][0]
         print(f"  {v['source']}  high-rate repeated connections ({v['status']}): {r['sessions']} sessions to {r['service']}, "
               f"up to {r['peak_per_minute']} a minute")
+    for v in logins:
+        r = v["runs"][0]
+        print(f"  {v['source']}  repeated failed-login pattern ({v['status']}): {r['sessions']} sessions to {r['service']} "
+              f"in {r['minutes']} minutes, replies of about {r['reply_bytes']} bytes")
     for g in rotations:
         print(f"  {g['sweeper']}  rotating sources ({g['status']}): {', '.join(j['source'] for j in g['joiners'])} came back to "
               "what it swept")
