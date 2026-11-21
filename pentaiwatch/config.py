@@ -375,8 +375,8 @@ class Config:
     allowlist: list[str] = field(default_factory=list)
     lookback_hours: float = 72           # how far back from the last session in the run to look (24-72)
     window_hours: float = 2              # length of the scoring window
-    # Use the list of published ARTEX, CyberStrikeAI and Cairn addresses that comes with PentAIWatch
-    # (data/known_bad.csv). Your own known_bad.csv is used either way.
+    # Use the list of published addresses of ARTEX, CyberStrikeAI, Cairn and other AI-assisted intrusions
+    # that comes with PentAIWatch (data/known_bad.csv). Your own known_bad.csv is used either way.
     known_bad_bundled: bool = True
     # Clock difference tolerated when matching one session seen by Zeek and by the firewall.
     dedup_skew_seconds: float = 2.0
