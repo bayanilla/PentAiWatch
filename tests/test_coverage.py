@@ -43,7 +43,7 @@ class Coverage(unittest.TestCase):
         self.assertTrue(rows[TIMING_B]["detail"].startswith(f"{n:,} of {n:,} sessions"))
         self.assertEqual(rows["Levels 2 and 3 (threat logs)"], {"detector": "Levels 2 and 3 (threat logs)",
                                                                "status": "not checked",
-                                                               "detail": "threat logs not provided"})
+                                                               "detail": "threat logs not provided", "techniques": []})
         self.assertIn("### What could be checked", md)
         self.assertIn(f"| {TIMING_B} | Checked |", md)
 
