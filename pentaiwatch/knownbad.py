@@ -1,8 +1,8 @@
 """Published attacker addresses: a source on this list is flagged and named whatever its traffic
 looked like.
 
-PentAIWatch carries a list of the addresses that vendors published for ARTEX, CyberStrikeAI and Cairn
-activity (``data/known_bad.csv``, see scripts/known_bad/build.py for where each row comes from).
+PentAIWatch carries a list of the addresses that vendors published for ARTEX, CyberStrikeAI, Cairn
+and other AI-assisted activity (``data/known_bad.csv``, see scripts/known_bad/build.py for where each row comes from).
 Your own list can be added in the same shape:
 
     address,name,confidence,reference

@@ -1,5 +1,6 @@
 """Published attacker addresses (knownbad.py): the bundled list, your own known_bad.csv, and how a
 source on a list is flagged whatever its traffic looked like."""
+import csv
 import json
 import os
 import tempfile
@@ -38,6 +39,32 @@ class Lists(unittest.TestCase):
         self.assertIsNotNone(lists.match("38.11.173.1"))
         self.assertIsNotNone(lists.match("38.11.173.125"))
         self.assertIsNone(lists.match("38.11.173.126"))
+
+    def test_the_addresses_collected_on_21_november_2026_keep_the_publishers_own_caution(self):
+        lists = knownbad.KnownBad(knownbad.bundled())
+        for ip, who, confidence in (("141.148.43.50", "Fireworks AI incident: attacker egress IP", "medium"),
+                                    ("136.144.242.56", "Anthropic", "high"),
+                                    ("176.65.144.71", "may be in legitimate use (JPCERT/CC case E)", "low"),
+                                    ("104.238.38.202", "commercial proxy server (Unit 42)", "low"),
+                                    ("2001:bc8:711:5854:dc00:1ff:fe18:ba53", "Anthropic", "high"),
+                                    ("139.180.197.150", "Cisco Talos", "high")):
+            hit = lists.match(ip)
+            self.assertIn(who, hit["name"])
+            self.assertEqual(hit["confidence"], confidence)
+        # every row of the collected file is in the bundled list, and whatever says proxy is low
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "scripts", "known_bad", "reports_2026_11.csv")
+        with open(path, encoding="utf-8", newline="") as fh:
+            rows = list(csv.DictReader(fh))
+        self.assertEqual(len(rows), 108)
+        for r in rows:
+            self.assertEqual(lists.match(r["address"])["reference"], r["reference"], r["address"])
+            self.assertTrue(r["reference"].startswith("https://"))
+            if "proxy" in r["name"].lower():
+                self.assertEqual(r["confidence"], "low", r["address"])
+        # read only in someone else's collection, or on a page that could not be read in full: left out
+        for ip in ("103.142.140.158", "118.107.47.11", "47.79.4.33", "102.216.154.102"):
+            self.assertIsNone(lists.match(ip))
 
     def test_your_file(self):
         with tempfile.TemporaryDirectory() as d:

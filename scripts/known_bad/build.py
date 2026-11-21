@@ -12,6 +12,16 @@ Sources:
     publisher's own words are kept as the name. Where it gave no confidence: high for a server it
     confirmed, medium for an address it lists without saying more, low where it says "suspected" or
     names only what the address did. An address the publisher calls a Tor exit node is left out.
+  * scripts/known_bad/reports_2026_11.csv: 108 more addresses of AI-assisted intrusions, collected
+    on 2026-11-21 and each found, word for word, where it was published: Wiz Research's Black
+    October indicator list (which names the platform that reported each one), Anthropic's
+    September 2026 threat report, JPCERT/CC, Zscaler, Unit 42, AWS, Eye Security, Barracuda,
+    ReversingLabs and Cisco Talos. The name keeps the publisher's own description. Confidence:
+    low where the publisher says proxy, dynamic, reassignable, shared, unconfirmed, low confidence
+    or that the address may be in legitimate use, or gives no role; high for a server it says the
+    actor ran; medium otherwise. Addresses known only through someone else's collection were left
+    out, and so were 15 whose page could not be read in full that day (AWS's ARTEX post, the
+    appendix of SentinelOne's ARTEX post, Arctic Wolf's alert pack).
 
 Usage:
   curl -sSLO https://raw.githubusercontent.com/SecureDataSolutions/artex-hunting-pack/main/iocs.csv
@@ -24,7 +34,10 @@ from __future__ import annotations
 import csv
 import hashlib
 import ipaddress
+import os
 import sys
+
+REPORTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports_2026_11.csv")
 
 UNIT42 = ("https://github.com/PaloAltoNetworks/Unit42-timely-threat-intel/blob/main/"
           "2026-10-30-activity-using-ARTEX-agentic-AI.txt")
@@ -63,11 +76,12 @@ def main(path: str) -> None:
     with open(path, "rb") as fh:
         digest = hashlib.sha256(fh.read()).hexdigest()
     out = csv.writer(sys.stdout, lineterminator="\n")
-    print("# Published addresses of ARTEX, CyberStrikeAI and Cairn activity, bundled with PentAIWatch.")
+    print("# Published addresses of ARTEX, CyberStrikeAI, Cairn and other AI-assisted intrusions, bundled with PentAIWatch.")
     print("# Built by scripts/known_bad/build.py from SecureDataSolutions/artex-hunting-pack iocs.csv")
     print(f"# (MIT licence, Copyright (c) 2026 Secure Data Solutions, Inc.; sha256 {digest})")
     print("# the Unit 42 note of 2026-10-30, and reports of November 2026 by Unit 42, AWS, Elastic Security Labs")
-    print("# and SentinelOne. Each row names who published it and how sure they are.")
+    print("# and SentinelOne, and scripts/known_bad/reports_2026_11.csv (Wiz Research, Anthropic, JPCERT/CC and others).")
+    print("# Each row names who published it and how sure they are.")
     out.writerow(["address", "name", "confidence", "reference"])
     seen = set()
     with open(path, encoding="utf-8", newline="") as fh:
@@ -79,7 +93,9 @@ def main(path: str) -> None:
                 if net not in seen:
                     seen.add(net)
                     out.writerow([net, name, r["confidence"], r["source_url"]])
-    for addr, name, conf, ref in EXTRA:
+    with open(REPORTS, encoding="utf-8", newline="") as fh:
+        more = [(r["address"], r["name"], r["confidence"], r["reference"]) for r in csv.DictReader(fh)]
+    for addr, name, conf, ref in EXTRA + more:
         net = cidrs(addr)[0]
         if net not in seen:
             seen.add(net)

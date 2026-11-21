@@ -187,14 +187,26 @@ ranges separated by spaces or `;`. Rotating sources are not changed by an author
 
 ### Published attacker addresses
 
-PentAIWatch comes with a list of the addresses vendors published for ARTEX, CyberStrikeAI and Cairn
-activity (`pentaiwatch/data/known_bad.csv`): CrowdStrike, Microsoft, Check Point, Censys and Team
+PentAIWatch comes with a list of the addresses vendors published for ARTEX, CyberStrikeAI, Cairn
+and other AI-assisted activity (`pentaiwatch/data/known_bad.csv`): CrowdStrike, Microsoft, Check Point, Censys and Team
 Cymru as collected by the MIT-licensed
 [artex-hunting-pack](https://github.com/SecureDataSolutions/artex-hunting-pack), plus the four
 addresses of Unit 42's note of 30 October 2026, and ten from reports of November 2026: Cairn
 servers and addresses (Unit 42, AWS), a CyberStrikeAI server and two that serve its certificate
-(Elastic Security Labs) and three ARTEX addresses (SentinelOne). Each row keeps who published it, how sure they
-were and where. `scripts/known_bad/build.py` rebuilds it from a newer copy of the pack; PentAIWatch
+(Elastic Security Labs) and three ARTEX addresses (SentinelOne).
+
+A further 108 addresses of AI-assisted intrusions were added on 21 November 2026
+(`scripts/known_bad/reports_2026_11.csv`), each found word for word where it was published: 76
+from Wiz Research's Black October indicator list, which names the platform that reported each one
+(Fireworks AI, Zeabur, Bitrise, Chainstack, Barracuda and others), 14 from Anthropic's September
+2026 threat report, 8 from JPCERT/CC, and the rest from Zscaler, Unit 42, AWS, Eye Security,
+Barracuda, ReversingLabs and Cisco Talos. Not all of these name a pentest framework: the Black
+October and Anthropic rows are intrusions run with AI assistance, tied to a tool only at the level
+of the whole campaign. 28 of the 108 are low confidence because the publisher itself says proxy,
+dynamic, reassignable, unconfirmed or possibly in legitimate use; the name on each row keeps those
+words. Addresses known only through someone else's collection were left out.
+
+Each row keeps who published it, how sure they were and where. `scripts/known_bad/build.py` rebuilds it from a newer copy of the pack; PentAIWatch
 never downloads it.
 
 A source on that list, or on your own `known_bad.csv`, that reached an internal host is flagged

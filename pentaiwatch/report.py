@@ -574,7 +574,7 @@ def _known_bad_line(res: dict) -> str:
     lists = res.get("known_bad_lists") or {}
     parts = []
     if lists.get("bundled"):
-        parts.append(f"the bundled list of published ARTEX, CyberStrikeAI and Cairn addresses ({lists['bundled']:,} ranges)")
+        parts.append(f"the bundled list of published addresses of ARTEX, CyberStrikeAI, Cairn and other AI-assisted intrusions ({lists['bundled']:,} ranges)")
     if lists.get("yours"):
         parts.append(f"your known_bad.csv ({lists['yours']:,} ranges)")
     return "- Flagged on sight: " + (" and ".join(parts) if parts else "no list of attacker addresses") + "."
