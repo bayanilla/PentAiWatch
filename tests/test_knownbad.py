@@ -25,6 +25,14 @@ class Lists(unittest.TestCase):
         self.assertIn("Unit 42", hit["name"])
         self.assertEqual(hit["list_name"], "bundled list")
         self.assertTrue(all(e["confidence"] in knownbad.CONFIDENCE for e in entries))
+        # the November 2026 reports: Cairn (Unit 42, AWS), CyberStrikeAI (Elastic), ARTEX (SentinelOne)
+        lists = knownbad.KnownBad(entries)
+        for ip, who, confidence in (("154.44.31.4", "Cairn", "high"), ("142.4.107.34", "AWS", "medium"),
+                                    ("43.240.29.11", "CyberStrikeAI", "high"), ("157.22.126.128", "SentinelOne", "low")):
+            hit = lists.match(ip)
+            self.assertIn(who, hit["name"])
+            self.assertEqual(hit["confidence"], confidence)
+        self.assertIsNone(lists.match("199.19.77.18"))       # published as a Tor exit node: left out
         # a published "first-last" range becomes CIDR ranges that cover exactly it
         lists = knownbad.KnownBad(entries)
         self.assertIsNotNone(lists.match("38.11.173.1"))

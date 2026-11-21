@@ -183,11 +183,13 @@ ranges separated by spaces or `;`. Rotating sources are not changed by an author
 
 ### Published attacker addresses
 
-PentAIWatch comes with a list of the addresses vendors published for ARTEX and CyberStrikeAI
+PentAIWatch comes with a list of the addresses vendors published for ARTEX, CyberStrikeAI and Cairn
 activity (`pentaiwatch/data/known_bad.csv`): CrowdStrike, Microsoft, Check Point, Censys and Team
 Cymru as collected by the MIT-licensed
 [artex-hunting-pack](https://github.com/SecureDataSolutions/artex-hunting-pack), plus the four
-addresses of Unit 42's note of 30 October 2026. Each row keeps who published it, how sure they
+addresses of Unit 42's note of 30 October 2026, and ten from reports of November 2026: Cairn
+servers and addresses (Unit 42, AWS), a CyberStrikeAI server and two that serve its certificate
+(Elastic Security Labs) and three ARTEX addresses (SentinelOne). Each row keeps who published it, how sure they
 were and where. `scripts/known_bad/build.py` rebuilds it from a newer copy of the pack; PentAIWatch
 never downloads it.
 

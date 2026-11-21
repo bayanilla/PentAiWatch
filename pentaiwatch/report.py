@@ -111,8 +111,8 @@ def _outbound_lines(contacts: list[dict], hints: list[dict], callbacks: list[dic
     lines = ["## Your hosts reaching out to attacker infrastructure", ""]
     if contacts:
         hosts = len({c["host"] for c in contacts})
-        lines += [f"{_n(hosts, 'internal host')} had sessions out to an address published for ARTEX or "
-                  "CyberStrikeAI activity (or listed in your known_bad.csv). Inbound traffic shows an attack; a host "
+        lines += [f"{_n(hosts, 'internal host')} had sessions out to an address published for ARTEX, "
+                  "CyberStrikeAI or Cairn activity (or listed in your known_bad.csv). Inbound traffic shows an attack; a host "
                   "of yours reaching out to the attacker's own servers can mean it worked, so check these hosts "
                   "first. Answered means the address replied.", "",
                   "| Internal host | Contacted | Published as | Sessions | Ports | Seen | Built from |",
@@ -441,7 +441,7 @@ def _known_bad_line(res: dict) -> str:
     lists = res.get("known_bad_lists") or {}
     parts = []
     if lists.get("bundled"):
-        parts.append(f"the bundled list of published ARTEX and CyberStrikeAI addresses ({lists['bundled']:,} ranges)")
+        parts.append(f"the bundled list of published ARTEX, CyberStrikeAI and Cairn addresses ({lists['bundled']:,} ranges)")
     if lists.get("yours"):
         parts.append(f"your known_bad.csv ({lists['yours']:,} ranges)")
     return "- Flagged on sight: " + (" and ".join(parts) if parts else "no list of attacker addresses") + "."
@@ -612,7 +612,7 @@ def markdown(res: dict) -> str:
               "timing could not be checked, because the sessions have no start time. A source whose timing "
               "was checked and did not fit is not flagged at all.",
               "- **Published attacker address.** A source on a list of addresses that vendors published for "
-              "ARTEX or CyberStrikeAI activity, or on your own known_bad.csv, is flagged whatever its traffic "
+              "ARTEX, CyberStrikeAI or Cairn activity, or on your own known_bad.csv, is flagged whatever its traffic "
               "looked like. The list says who published it and how sure they were.",
               "- **Fixed-interval repetition.** A source that hit one service over and over at an almost "
               "constant gap, as a scripted login brute force or a health check does. A lead on its own; flagged "
