@@ -1896,12 +1896,12 @@ def _nonstop(con, cfg: Config, out: Detection) -> None:
     n = cfg.nonstop
     rows = con.execute("""
         WITH t AS (
-            SELECT src_ip, start_ts, epoch(start_ts) - epoch(lag(start_ts) OVER w) AS gap
+            SELECT src_ip, start_ts, epoch(start_ts) - epoch(lag(start_ts) OVER w) AS gap, row_number() OVER w AS pos
             FROM pw_sessions WHERE list_contains($sources, src_ip)
             WINDOW w AS (PARTITION BY src_ip ORDER BY start_ts, seq)),
         r AS (
             SELECT *, sum(CASE WHEN gap IS NULL OR gap > $quiet THEN 1 ELSE 0 END) OVER (
-                PARTITION BY src_ip ORDER BY start_ts ROWS UNBOUNDED PRECEDING) AS stretch
+                PARTITION BY src_ip ORDER BY pos ROWS UNBOUNDED PRECEDING) AS stretch
             FROM t)
         SELECT src_ip, min(start_ts) AS first_ts, max(start_ts) AS last_ts, count(*) AS n,
                max(gap) FILTER (gap <= $quiet) AS longest
