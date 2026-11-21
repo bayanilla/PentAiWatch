@@ -369,6 +369,30 @@ class Callback:
 
 
 @dataclass
+class Beacon:
+    """An internal host's fixed-interval calls out to one outside service: a lead, or flagged when
+    what it goes to backs it."""
+    host: str
+    network: str                 # name from network_map.csv, '' when unmapped
+    destination: str
+    port: int | None
+    proto: str
+    service: str                 # "address:port/proto"
+    sessions: int                # sessions in its longest run
+    answered: int
+    gap_seconds: float           # the typical (mean) gap between session starts in that run
+    jitter: float                # standard deviation of the gaps over their mean
+    whole_seconds: bool          # its times are whole seconds (as on the firewall), so the gaps are too
+    first: str                   # of that run
+    last: str
+    runs: int                    # how many such runs the host had to this service
+    sessions_all: int            # sessions in all of them
+    log_sources: list[str]
+    status: str = "lead"         # "flagged" when backed_by is not empty
+    backed_by: list[str] = field(default_factory=list)
+
+
+@dataclass
 class SteadySource:
     """A source with fixed-interval repetition that is not a finding: a lead, or flagged when backed."""
     source: str
@@ -448,6 +472,10 @@ class Detection:
     # many there are in all (the list is capped)
     callbacks: list[Callback] = field(default_factory=list)
     callbacks_total: int = 0
+    # internal hosts' fixed-interval calls out (leads, or flagged when backed), flagged first, and how
+    # many there are in all (the list is capped)
+    beacons: list[Beacon] = field(default_factory=list)
+    beacons_total: int = 0
     warnings: list[str] = field(default_factory=list)
     lookback_start: str | None = None
     lookback_end: str | None = None
@@ -499,6 +527,8 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
         if cfg.outbound.check:
             out.outbound_contacts, out.c2_hints = _outbound(con, cfg, bad, start, nm)
             out.callbacks, out.callbacks_total = _callbacks(con, cfg, bad, start, nm)
+        beacons = _beacons(con, cfg, start, nm) if cfg.beacon.check else []
+        _beacon_backing(cfg, out, beacons, bad)        # again below, once the findings and leads are known
         _common_sessions(con, cfg, start)
         out.inbound_sessions, out.outside_sources = con.execute(
             "SELECT count(*), count(DISTINCT src_ip) FROM pw_sessions").fetchone()
@@ -565,6 +595,7 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
             out.login_sources.sort(key=lambda v: v.status == "regular")
         _authorize(con, cfg, out)
         _callback_status(out)
+        _beacon_backing(cfg, out, beacons, bad)
         out.coverage = _coverage(con, cfg, out)
         listed_but_allowed = sorted(ip for ip in bad if ip in _allowed(con))
         if listed_but_allowed:
@@ -1441,26 +1472,15 @@ def _spray(con, cfg: Config) -> dict[str, list[SprayRun]]:
 
 # -- 10. fixed-interval repetition --------------------------------------------------------------
 MAX_STEADY_RUNS = 10
-
-
-def _steady(con, cfg: Config) -> dict[str, list[SteadyRun]]:
-    """Per source, its runs of ``steady.min_sessions`` or more sessions to one service, each started
-    no more than ``steady.max_gap_seconds`` after the one before, whose gaps vary by no more than
-    ``steady.max_jitter`` of their mean. Longest run first. Only sessions whose START time was logged
-    (Zeek's ts or the firewall's start field): a start worked out from whole elapsed seconds blurs a
-    1 or 2-second interval, so those sessions are never used here.
-
-    Where every time in a run is a whole second (Palo Alto logs), a steady 1.5-second gap shows up
-    as 1, 2, 1, 2...: the rounding alone spreads the gaps, so a run whose gaps are all one of two
-    neighbouring whole seconds counts as steady too. A pace that really varies shows gaps of 0, 1,
-    2 and 3 there. Below a typical gap of one second many sessions share a second and the rounding
-    hides the pace, so no such allowance is made."""
-    s = cfg.steady
-    rows = con.execute("""
-        WITH t AS (
+# Runs of sessions from one address to one service at an almost constant gap, over ``{rows}``: a query
+# giving src_ip, dst_ip, dst_port, proto, start_ts, seq and outcome. Used inbound (_steady) and
+# outbound (_beacons). Parameters: $max_gap, $min_sessions, $max_jitter, and whatever {rows} binds.
+_RUNS_SQL = """
+        WITH s AS ({rows}),
+        t AS (
             SELECT src_ip, dst_ip, dst_port, proto, start_ts, outcome,
                    epoch(start_ts) - epoch(lag(start_ts) OVER w) AS gap
-            FROM pw_sessions WHERE list_contains(CAST($timed AS VARCHAR[]), start_method)
+            FROM s
             WINDOW w AS (PARTITION BY src_ip, dst_ip, dst_port, proto ORDER BY start_ts, seq)),
         r AS (
             SELECT *, sum(CASE WHEN gap IS NULL OR gap > $max_gap THEN 1 ELSE 0 END) OVER (
@@ -1477,7 +1497,83 @@ def _steady(con, cfg: Config) -> dict[str, list[SteadyRun]]:
         SELECT src_ip, dst_ip, dst_port, proto, n, answered, mean_gap, sd_gap / mean_gap, whole, first_ts, last_ts
         FROM runs WHERE n >= $min_sessions AND mean_gap > 0
           AND (sd_gap <= $max_jitter * mean_gap OR (whole AND mean_gap >= 1 AND hi_gap - lo_gap <= 1))
-        ORDER BY src_ip, n DESC, first_ts""",
+        ORDER BY src_ip, n DESC, first_ts"""
+MAX_BEACONS = 50
+
+
+def _beacons(con, cfg: Config, start: datetime, nm: NetMap) -> list[Beacon]:
+    """Per internal host and outside service, the host's fixed-interval runs of sessions OUT since
+    ``start`` (config.Beacon): the longest run, how many runs and their sessions. The same reading
+    as ``_steady``, whole-second allowance included, on outbound sessions with a logged start time.
+    A destination on the allowlist or in known_scanners.csv is left out. Most sessions first."""
+    b = cfg.beacon
+    rows = con.execute(_RUNS_SQL.format(rows=f"""
+            SELECT f.src_ip, f.dst_ip, f.dst_port, f.proto, f.ts AS start_ts, f.seq, {_OUTCOME_SQL} AS outcome
+            FROM flows f JOIN pw_ip s ON s.ip = f.src_ip JOIN pw_ip d ON d.ip = f.dst_ip
+            WHERE s.internal AND NOT d.internal AND NOT d.allowed AND f.ts IS NOT NULL AND f.ts >= $start
+              AND list_contains(CAST($timed AS VARCHAR[]), f.start_method)"""),
+                       {"timed": list(CADENCE_TIMED), "max_gap": float(b.max_gap_seconds),
+                        "min_sessions": int(b.min_sessions), "max_jitter": float(b.max_jitter), "start": start,
+                        "zeek_failed": list(cfg.probing.zeek_failed_states),
+                        "zeek_answered": list(cfg.narrowing.zeek_answered_states),
+                        "zeek_icmp": bool(cfg.probing.zeek_icmp_by_reply),
+                        "pa_failed_packets": int(cfg.paloalto.failed_max_packets_received),
+                        "pa_answered_bytes": int(cfg.paloalto.answered_min_bytes_received)}).fetchall()
+    found: dict[tuple, Beacon] = {}
+    for host, dest, port, proto, n, answered, gap, jitter, whole, first, last in rows:     # longest run first
+        key = (host, dest, port, proto)
+        if key in found:
+            found[key].runs += 1
+            found[key].sessions_all += int(n)
+            continue
+        sensors = [r[0] for r in con.execute(
+            "SELECT DISTINCT sensor FROM flows WHERE src_ip = ? AND dst_ip = ? ORDER BY 1", [host, dest]).fetchall()]
+        found[key] = Beacon(
+            host=host, network=nm.name(host), destination=dest, port=port, proto=proto,
+            service=f"{dest}:{port}/{proto}" if port is not None else f"{dest}/{proto}", sessions=int(n),
+            answered=int(answered), gap_seconds=round(gap, 2), jitter=round(jitter, 3), whole_seconds=bool(whole),
+            first=_iso(first), last=_iso(last), runs=1, sessions_all=int(n), log_sources=sensors)
+    return sorted(found.values(), key=lambda x: (-x.sessions_all, x.host, x.service))
+
+
+def _beacon_backing(cfg: Config, out: Detection, beacons: list[Beacon], bad: dict[str, dict]) -> None:
+    """Set ``status`` and ``backed_by`` on the fixed-interval calls out, and keep the first
+    MAX_BEACONS, flagged first. One is flagged when the address it goes to is a published attacker
+    address, or a finding or a flagged lead of this report, or its port is a command-and-control or
+    agentic-tool port (``outbound``). Otherwise it is a lead: an update agent keeps a gap as even."""
+    findings = {f.source for f in out.findings}
+    flagged = ({v.source for v in out.steady_sources if v.status == "flagged"}
+               | {w.source for w in out.spray_sources if w.status == "flagged"}
+               | {x.source for x in out.login_sources if x.status == "flagged"})
+    ports = {port: tool for group in (cfg.outbound.c2_ports, cfg.outbound.tool_ports)
+             for tool, group_ports in group.items() for port in group_ports}
+    for b in beacons:
+        tool = (ports.get(b.port, "") or _range_tool(cfg, b.port)) if b.proto == "tcp" and b.port is not None else ""
+        b.backed_by = ((["the address is a published attacker address"] if b.destination in bad else [])
+                       + (["the address is a finding in this report"] if b.destination in findings else [])
+                       + (["the address is a flagged lead in this report"] if b.destination in flagged else [])
+                       + ([f"the port is the default of {tool}"] if tool else []))
+        b.status = "flagged" if b.backed_by else "lead"
+    beacons.sort(key=lambda x: (x.status != "flagged", -x.sessions_all, x.host, x.service))
+    out.beacons, out.beacons_total = beacons[:MAX_BEACONS], len(beacons)
+
+
+def _steady(con, cfg: Config) -> dict[str, list[SteadyRun]]:
+    """Per source, its runs of ``steady.min_sessions`` or more sessions to one service, each started
+    no more than ``steady.max_gap_seconds`` after the one before, whose gaps vary by no more than
+    ``steady.max_jitter`` of their mean. Longest run first. Only sessions whose START time was logged
+    (Zeek's ts or the firewall's start field): a start worked out from whole elapsed seconds blurs a
+    1 or 2-second interval, so those sessions are never used here.
+
+    Where every time in a run is a whole second (Palo Alto logs), a steady 1.5-second gap shows up
+    as 1, 2, 1, 2...: the rounding alone spreads the gaps, so a run whose gaps are all one of two
+    neighbouring whole seconds counts as steady too. A pace that really varies shows gaps of 0, 1,
+    2 and 3 there. Below a typical gap of one second many sessions share a second and the rounding
+    hides the pace, so no such allowance is made."""
+    s = cfg.steady
+    rows = con.execute(_RUNS_SQL.format(rows="""
+            SELECT src_ip, dst_ip, dst_port, proto, start_ts, seq, outcome
+            FROM pw_sessions WHERE list_contains(CAST($timed AS VARCHAR[]), start_method)"""),
                        {"timed": list(CADENCE_TIMED), "max_gap": float(s.max_gap_seconds),
                         "min_sessions": int(s.min_sessions), "max_jitter": float(s.max_jitter)}).fetchall()
     out: dict[str, list[SteadyRun]] = {}
@@ -1806,6 +1902,9 @@ def _coverage(con, cfg: Config, out: Detection) -> list[Coverage]:
     rows.append(Coverage("Published attacker addresses (context, not behaviour)", "checked",
                          f"{len(cfg.known_bad):,} listed addresses or ranges"
                          + (", the bundled list included" if cfg.known_bad_bundled else ", the bundled list off")))
+    rows.append(Coverage("Fixed-interval calls out", "checked" if cfg.beacon.check else "not checked",
+                         "internal hosts' sessions out with a logged start time" if cfg.beacon.check
+                         else "beacon.check is off"))
     rows.append(Coverage("Outbound to attacker infrastructure", "checked" if cfg.outbound.check else "not checked",
                          "internal hosts' sessions out" if cfg.outbound.check else "outbound.check is off"))
     return rows
