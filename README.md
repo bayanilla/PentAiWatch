@@ -336,6 +336,21 @@ last port); the 50 groups with the most answered sessions are listed. Set
 `"outbound": {"check": false}` to skip all of this. A destination on the allowlist or in
 `known_scanners.csv` is left out, as it is for sources.
 
+### Fixed-interval calls out
+
+An implant checks in with its server on a timer: Elastic Security Labs found CyberStrikeAI's
+checking in every five seconds with no jitter. PentAIWatch reads the same fixed-interval cadence it
+looks for coming in on sessions going out: an internal host with `beacon.min_sessions` (60) or more
+sessions in a row to one outside service, each within `beacon.max_gap_seconds` (10) of the last,
+whose gaps vary by no more than `beacon.max_jitter` (10%). Only logged session start times are
+used.
+
+Update agents, monitoring and sync clients keep a gap just as even, so on its own this is a lead,
+listed under *Fixed-interval calls out*. It is flagged when the address is a published attacker
+address, or a finding or a flagged lead in the same report, or the port is a command-and-control
+or agentic-tool port. The 50 with the most sessions are listed. A check-in slower than one every
+10 seconds, or one with jitter, is not seen. `"beacon": {"check": false}` turns this off.
+
 ### Named targets
 
 The ARTEX and CyberStrikeAI reporting says what the agents went for: FortiGate and other firewall
@@ -446,6 +461,12 @@ first is used, a warning names the others, and `--config` settles it.
     "tool_port_ranges": {
       "PentAGI worker": [28000, 30000]
     }
+  },
+  "beacon": {
+    "check": true,
+    "min_sessions": 60,
+    "max_gap_seconds": 10,
+    "max_jitter": 0.1
   },
   "targets": {
     "Edge device admin or VPN": [541, 4443, 8443, 9443, 10443],
@@ -598,8 +619,9 @@ run found nothing because it could not look. The command line names the ones not
   over one connection it keeps open, or runs several jobs at once from one address, shows fewer
   pauses and can go unflagged.
 - **Inbound behaviour, outbound by address.** The behaviour signals score outside sources
-  towards internal hosts. Outbound, only sessions to published attacker addresses (flagged) and
-  to command-and-control ports or back to a source on an agentic tool's port (hints) are looked at; an agent's other traffic out, such as calls
+  towards internal hosts. Outbound, only sessions to published attacker addresses (flagged),
+  to command-and-control ports or back to a source on an agentic tool's port (hints), and
+  fixed-interval calls out (leads) are looked at; an agent's other traffic out, such as calls
   to an LLM API, and activity between internal hosts are not.
 - **Not flagged does not mean cleared.** Only connection metadata is read.
 - **Threat logs are read, not scored yet.** Palo Alto threat rows are counted in the report. They

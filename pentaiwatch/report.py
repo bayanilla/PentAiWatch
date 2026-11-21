@@ -388,6 +388,42 @@ def _steady_lines(steady: list[dict], st: dict) -> list[str]:
     return lines + [""]
 
 
+def _beacon_lines(beacons: list[dict], total: int, st: dict) -> list[str]:
+    """Internal hosts' fixed-interval calls out: flagged when what they go to backs them, else leads."""
+    if not beacons:
+        return []
+    b = st["beacon"]
+    lines = ["### Fixed-interval calls out", "",
+             f"{_n(len({x['host'] for x in beacons}), 'internal host')} connected out to one outside service over "
+             f"and over at an almost constant gap: {b['min_sessions']}+ sessions in a row, each within "
+             f"{b['max_gap_seconds']:g} seconds of the last, with gaps that vary by no more than {b['max_jitter']:.0%}. "
+             "An implant checking in with its server looks like this (CyberStrikeAI's checks in every five seconds "
+             "with no jitter); so do update agents, monitoring and sync clients. On its own this is a lead; it is "
+             "flagged when the address is a published attacker address or a finding or flagged lead of this report, "
+             "or the port is a command-and-control or agentic-tool port.", "",
+             "| Internal host | Calls | Status | Longest run | In all | Built from |", "|---|---|---|---|---|---|"]
+    for x in beacons:
+        status = f"Flagged: {_all(x['backed_by'])}" if x.get("status") == "flagged" else "Lead"
+        spread = ("times in whole seconds, so the gaps vary only by the rounding" if x.get("whole_seconds")
+                  else f"gaps vary by {x['jitter']:.1%}")
+        lines.append(f"| {_host(x)} | {x['service']} | {status} | {x['sessions']:,} sessions "
+                     f"({x['answered']:,} answered), one every {x['gap_seconds']:g} s ({spread}), "
+                     f"{_when(x['first'])} to {_when(x['last'])} | {_n(x['runs'], 'run')}, {x['sessions_all']:,} sessions | "
+                     f"{_all([SOURCE_TEXT.get(s, s) for s in x['log_sources']])} |")
+    if total > len(beacons):
+        lines.append(f"| and {total - len(beacons):,} more | | | | | |")
+    return lines + [""]
+
+
+def _beacon_line(st: dict) -> str:
+    b = st.get("beacon") or {}
+    if not b.get("check"):
+        return "- Fixed-interval calls out: not checked (beacon.check is off)."
+    return (f"- Fixed-interval calls out (a lead on its own): {b['min_sessions']}+ sessions in a row from an internal "
+            f"host to one outside service, each within {b['max_gap_seconds']:g} seconds of the last, gaps varying by "
+            f"at most {b['max_jitter']:.0%} of their mean.")
+
+
 def _login_line(st: dict) -> str:
     c = st.get("login_spray") or {}
     if not c.get("check"):
@@ -598,6 +634,7 @@ def markdown(res: dict) -> str:
     lines += _steady_lines(det.get("steady_sources") or [], st)
     lines += _spray_lines(det.get("spray_sources") or [], st)
     lines += _login_lines(det.get("login_sources") or [], st)
+    lines += _beacon_lines(det.get("beacons") or [], det.get("beacons_total") or 0, st)
     lines += _authorized_lines(det.get("authorized") or [])
     if map_file:
         replay = (" Its Timeline replays a source's sessions in the order they started, with its bursts and "
@@ -628,6 +665,10 @@ def markdown(res: dict) -> str:
               "attacker address is flagged; it can mean an attack worked. Sessions out to a command-and-control "
               "tool's default port are named as a hint and flag nothing. So are sessions out, on the default port "
               "of an agentic framework's own server, to an address that had already connected in (a call back).",
+              "- **Fixed-interval calls out.** An internal host that connected out to one outside service over "
+              "and over at an almost constant gap, as an implant checking in does, or an update agent. A lead on "
+              "its own; flagged when the address is a published attacker address or a finding or flagged lead "
+              "here, or the port is a command-and-control or agentic-tool port.",
               "- **Several attack paths at once** raises confidence in a Level 1 or Tier 0 finding: once it "
               "narrowed, the source's bursts worked more than one service, taking turns between them, as an "
               "agent running attack paths side by side does. It never flags a source on its own.",
@@ -705,6 +746,7 @@ def markdown(res: dict) -> str:
               f"{st['rotation']['max_service_sources']} outside addresses used never count.",
               _shared_line(st),
               _outbound_line(st),
+              _beacon_line(st),
               _targets_line(st),
               f"- Never flagged: {', '.join(st['allowlist'] + [k['cidr'] for k in res['known_scanners'] if not _is_auth(k)]) or 'nothing listed'}."
               + (f" That left out {_n(det['never_flagged_sources'], 'outside source')} with "

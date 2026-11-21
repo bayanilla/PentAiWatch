@@ -93,7 +93,11 @@ def summary(res: dict) -> dict:
                        + [{"source": c["host"], "level": None, "label": f"reached {c['destination']} "
                            f"({c['name'] or 'published address'}), {c['sessions']:,} sessions",
                            "hosts": 1, "timeline": False, "tag": "Reached attacker"}
-                          for c in res["detection"].get("outbound_contacts") or []]}
+                          for c in res["detection"].get("outbound_contacts") or []]
+                       + [{"source": b["host"], "level": None, "label": f"{b['sessions']:,} sessions out to "
+                           f"{b['service']}, one every {b['gap_seconds']:g} s", "hosts": 1, "timeline": False,
+                           "tag": "Calls out", "lead": b.get("status") != "flagged"}
+                          for b in res["detection"].get("beacons") or []]}
 
 
 def _rotation_entries(res: dict) -> list[dict]:

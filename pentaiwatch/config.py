@@ -225,6 +225,22 @@ class Outbound:
         default_factory=lambda: {"PentAGI worker": [28000, 30000]}, metadata={"kind": "targets"})
 
 
+@dataclass
+class Beacon:
+    """Fixed-interval calls out: an internal host connects out to one outside service over and over
+    at an almost constant gap, as an implant checking in with its server does (Elastic Security Labs:
+    CyberStrikeAI's implant checks in every five seconds with no jitter). It is the fixed-interval
+    cadence of ``steady``, read on sessions going OUT. Update agents, monitoring and sync clients keep
+    a gap just as even, so on its own this is a lead. It is flagged when the address it goes to is a
+    published attacker address or a finding or flagged lead in the same report, or the port is a
+    command-and-control or agentic-tool port (``outbound``). Only logged session START times are
+    used, as for ``steady``."""
+    check: bool = True
+    min_sessions: int = 60               # sessions in one unbroken run to the same outside service
+    max_gap_seconds: float = 10          # a longer gap between two starts ends the run
+    max_jitter: float = 0.10             # standard deviation of the gaps over their mean
+
+
 # Kinds of service the ARTEX and CyberStrikeAI reporting names as what the agents went for, by TCP or
 # UDP port. A flagged source's services on these ports are named in the report; they do not change
 # whether it is flagged. Port 443 is left out: too much else answers on it to name anything.
@@ -328,6 +344,7 @@ class Config:
     baseline: Baseline = field(default_factory=Baseline)
     shared_sweep: SharedSweep = field(default_factory=SharedSweep)
     outbound: Outbound = field(default_factory=Outbound)
+    beacon: Beacon = field(default_factory=Beacon)
     # Named kinds of target: name -> ports. Your names are added; giving a default name replaces its
     # ports, and an empty list drops it.
     targets: dict[str, list[int]] = field(
@@ -447,7 +464,8 @@ def check(cfg: Config, name: str = "settings") -> None:
                 "timing.pause_min_seconds": cfg.timing.pause_min_seconds,
                 "timing.pause_max_seconds": cfg.timing.pause_max_seconds,
                 "timing.min_cycles": cfg.timing.min_cycles,
-                "steady.max_gap_seconds": cfg.steady.max_gap_seconds}
+                "steady.max_gap_seconds": cfg.steady.max_gap_seconds,
+                "beacon.max_gap_seconds": cfg.beacon.max_gap_seconds}
     for key, value in positive.items():
         if not value > 0:
             raise UserError(f"{name}: {key} must be more than 0")
@@ -457,6 +475,7 @@ def check(cfg: Config, name: str = "settings") -> None:
               "timing.min_pause_share": cfg.timing.min_pause_share,
               "timing.min_timed_share": cfg.timing.min_timed_share,
               "steady.max_jitter": cfg.steady.max_jitter,
+              "beacon.max_jitter": cfg.beacon.max_jitter,
               "spray.min_answered_share": cfg.spray.min_answered_share,
               "shared_sweep.min_split_share": cfg.shared_sweep.min_split_share,
               "login_spray.min_answered_share": cfg.login_spray.min_answered_share,
@@ -466,6 +485,9 @@ def check(cfg: Config, name: str = "settings") -> None:
             raise UserError(f"{name}: {key} must be between 0 and 1 (0.7 means 70%)")
     if cfg.steady.min_sessions < 3:
         raise UserError(f"{name}: steady.min_sessions must be 3 or more: two sessions have one gap, which is "
+                        "always even")
+    if cfg.beacon.min_sessions < 3:
+        raise UserError(f"{name}: beacon.min_sessions must be 3 or more: two sessions have one gap, which is "
                         "always even")
     if cfg.parallel.min_services < 2 or cfg.parallel.min_bursts < 1:
         raise UserError(f"{name}: parallel.min_services must be 2 or more, and parallel.min_bursts 1 or more")

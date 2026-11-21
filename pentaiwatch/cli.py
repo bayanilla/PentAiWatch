@@ -121,6 +121,9 @@ def main(argv=None) -> int:
     hints = res["detection"].get("c2_hints") or []
     if hints:
         print(f"  {len(hints)} outbound session group(s) to command-and-control ports (hints, see the report)")
+    for b in res["detection"].get("beacons") or []:
+        print(f"  {b['host']}  fixed-interval calls out ({b['status']}): {b['sessions']} sessions to {b['service']}, "
+              f"one every {b['gap_seconds']:g} s")
     calls = res["detection"].get("callbacks_total") or 0
     if calls:
         print(f"  {calls} outbound session group(s) back to a source on an agentic tool's port (hints, see the report)")
