@@ -74,6 +74,12 @@ def summary(res: dict) -> dict:
                            "timeline": False, "tag": "Repeated connections", "lead": v.get("status") != "flagged",
                            "regular": v.get("status") == "regular"}
                           for v in res["detection"].get("spray_sources") or []]
+                       + [{"source": v["source"], "level": None, "label": f"{v['runs'][0]['sessions']:,} short sessions "
+                           f"to {v['runs'][0]['service']} in {v['runs'][0]['minutes']} minutes, same-size replies",
+                           "hosts": len({r["service"].split(":")[0] for r in v["runs"]}), "timeline": False,
+                           "tag": "Login pattern", "lead": v.get("status") != "flagged",
+                           "regular": v.get("status") == "regular"}
+                          for v in res["detection"].get("login_sources") or []]
                        + _rotation_entries(res)
                        + [{"source": ip, "level": None, "label": f"came back to {r['service']} after "
                            f"{len(g['sweepers'])} addresses split a sweep of {g['network']}", "hosts": 1,

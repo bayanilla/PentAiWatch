@@ -18,7 +18,7 @@ Palo Alto versions (not committed): `python scripts/samples/build.py paloalto sa
 | Input | Result |
 | --- | --- |
 | Zeek, Palo Alto with start time, or both | `212.11.64.250` Level 1, fixed-interval cadence (a login every 1.5 seconds) |
-| Palo Alto, elapsed seconds only | nothing flagged: a 1.5-second step cannot be read from whole-second end times minus elapsed, and the report says so |
+| Palo Alto, elapsed seconds only | no finding: a 1.5-second step cannot be read from whole-second end times minus elapsed, and the report says so; but the brute force still shows the repeated failed-login pattern on 172.16.10.1:10443, flagged because `212.11.64.250` swept first |
 | Palo Alto, no start time | `212.11.64.250`, `146.190.195.154` and `64.176.48.93` Tier 0; timing not read |
 
 `146.190.195.154` and `64.176.48.93` fingerprint the FortiGate's management ports after their sweep,

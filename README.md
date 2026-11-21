@@ -233,6 +233,23 @@ time the session has, so it works from Zeek or from any Palo Alto export. A serv
 `spray.max_service_sources` (20) outside addresses used is public and left out, because a busy
 client of it, or many people behind one NAT address, is expected there.
 
+### Repeated failed-login pattern
+
+ARTEX sprayed an SSO login page at about one attempt a second for 40 minutes. That is too uneven
+for fixed-interval repetition, just under the high-rate threshold, and aimed at a public service,
+which high-rate repeated connections leave out. A connection log cannot see accounts or passwords,
+so this detector reads the shape a login page refusing password after password leaves: one source
+sends `login_spray.min_per_minute` (20) or more sessions a minute to one TCP service for
+`login_spray.min_minutes` (15) or more minutes in one stretch (gaps of up to 2 minutes),
+`login_spray.min_answered_share` (50%) or more of them complete, the completed ones get small
+replies (median `login_spray.max_reply_bytes`, 16 KB, or less) of nearly one size (spread
+`login_spray.max_reply_spread`, 60%, or less), and the source makes up
+`login_spray.min_service_share` (50%) or more of that service's sessions in the stretch. Public
+services count. A monitor or an integration posting small requests all day looks the same, so on
+its own this is a **lead**; a sweep from the same source, or fixed-interval or high-rate repetition
+on another service, flags it. Regular clients and authorizations apply to it as to the other
+leads. Check the service's own log for failed logins and how many accounts they named.
+
 ### Regular clients
 
 A health check or a partner integration that runs every day is a fixed-interval or high-rate lead
@@ -384,6 +401,15 @@ first is used, a warning names the others, and `--config` settles it.
     "min_joiners": 2,
     "max_service_sources": 20,
     "quiet_before_hours": 2
+  },
+  "login_spray": {
+    "check": true,
+    "min_per_minute": 20,
+    "min_minutes": 15,
+    "min_answered_share": 0.5,
+    "max_reply_bytes": 16384,
+    "max_reply_spread": 0.6,
+    "min_service_share": 0.5
   },
   "shared_sweep": {
     "check": true,

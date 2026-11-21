@@ -22,7 +22,9 @@ Palo Alto versions (not committed): `python scripts/samples/build.py paloalto sa
 | Palo Alto, no start time | `144.172.64.60`, `.99`, `.128` and `104.194.150.21` Tier 0; timing not read |
 
 `144.172.64.60` and `104.194.150.21` sweep and come back to what answered, but at an uneven pace, so
-they are not flagged: a person with a scanner does the same. `144.172.64.60`'s password spray is a
-near miss worth knowing about: about one attempt a second for 40 minutes, but with gaps of 0.8 to 1.4
-seconds (too uneven for a fixed interval) and just under 60 a minute (the high-rate threshold). The
-thresholds were not lowered to catch it. `tests/test_samples.py` checks all of this.
+they are not findings: a person with a scanner does the same. `144.172.64.60`'s password spray on
+the SSO page (10.50.1.11:443, about one attempt a second for 40 minutes, gaps of 0.8 to 1.4 seconds,
+just under 60 a minute) is too uneven for a fixed interval and under the high-rate threshold, so it
+is caught by the repeated failed-login pattern instead: 42 minutes of small, same-size replies,
+flagged because the same address swept first. `144.172.64.99` shows the same pattern beside its
+Level 1 finding. `tests/test_samples.py` checks all of this.
