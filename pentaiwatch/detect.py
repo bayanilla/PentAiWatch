@@ -178,6 +178,7 @@ class Finding:
     parallel: ParallelPaths | None = None   # several attack paths at once, if seen: higher confidence
     confidence: str = "standard"            # "higher" when several attack paths at once were seen
     rotation: Rotation | None = None        # new addresses that came back to what its sweep found
+    user_agents: list[str] = field(default_factory=list)   # agentic tools' user agents it sent, "tool: user agent"
     nonstop: Nonstop | None = None          # active for most of a day or longer with no long break
 
 
@@ -406,6 +407,36 @@ class Beacon:
 
 
 @dataclass
+class ToolClient:
+    """An address whose HTTP requests carried an agentic tool's user agent (Zeek http.log)."""
+    source: str
+    internal: bool               # one of your hosts: the tool is running inside
+    network: str                 # name from network_map.csv, '' when unmapped or outside
+    tools: list[str]             # whose user agents, as the web settings name them
+    user_agents: list[str]       # as sent, most requests first (capped)
+    requests: int
+    hosts: list[str]             # where the requests went, most requests first (capped)
+    hosts_total: int
+    first: str
+    last: str
+    also: str = ""               # what else the source is in this report: "finding", "lead" or ''
+
+
+@dataclass
+class NameContact:
+    """An internal host that looked up or connected to a watched name (Zeek dns, http or ssl log). A
+    hint only: it never flags."""
+    host: str
+    network: str
+    kind: str                    # the kind of name, as the web settings call it
+    names: list[str]             # the names seen, most records first (capped)
+    seen_in: list[str]           # dns, http, ssl
+    records: int
+    first: str
+    last: str
+
+
+@dataclass
 class SteadySource:
     """A source with fixed-interval repetition that is not a finding: a lead, or flagged when backed."""
     source: str
@@ -491,6 +522,13 @@ class Detection:
     # many there are in all (the list is capped)
     beacons: list[Beacon] = field(default_factory=list)
     beacons_total: int = 0
+    # from Zeek http.log: addresses whose requests carried an agentic tool's user agent (context, named
+    # on sight), outside sources first; from dns, http and ssl logs: internal hosts and watched names
+    # (hints); and how many records of each of those logs were checked ({} when none was given)
+    tool_clients: list[ToolClient] = field(default_factory=list)
+    name_contacts: list[NameContact] = field(default_factory=list)
+    name_contacts_total: int = 0
+    web_logs: dict[str, int] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     lookback_start: str | None = None
     lookback_end: str | None = None
@@ -544,6 +582,8 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
             out.callbacks, out.callbacks_total = _callbacks(con, cfg, bad, start, nm)
         beacons = _beacons(con, cfg, start, nm) if cfg.beacon.check else []
         _beacon_backing(cfg, out, beacons, bad)        # again below, once the findings and leads are known
+        if cfg.web.check:
+            _web(con, cfg, out, start, nm)
         _common_sessions(con, cfg, start)
         out.inbound_sessions, out.outside_sources = con.execute(
             "SELECT count(*), count(DISTINCT src_ip) FROM pw_sessions").fetchone()
@@ -613,6 +653,7 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
         _authorize(con, cfg, out)
         _callback_status(out)
         _beacon_backing(cfg, out, beacons, bad)
+        _web_status(out)
         out.coverage = _coverage(con, cfg, out)
         listed_but_allowed = sorted(ip for ip in bad if ip in _allowed(con))
         if listed_but_allowed:
@@ -629,14 +670,10 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
 
 
 # -- 1. addresses ---------------------------------------------------------------------------
-def _classify_addresses(con, cfg: Config) -> dict[str, dict]:
-    """Table pw_ip(ip, internal, allowed) for every address in the flows. Internal: inside
-    ``internal_nets`` or a network_map.csv range. Allowed: in the allowlist or known_scanners.csv.
-    Returns the outside addresses on a list of published attacker addresses, with their entry."""
+def _internal_test(cfg: Config):
+    """A function that says whether an address is internal (``internal_nets`` or a network_map.csv range)."""
     internal = [ipaddress.ip_network(c, strict=False)
                 for c in list(cfg.internal_nets) + [e["cidr"] for e in cfg.networks]]
-    allowed = Known([{"cidr": str(ipaddress.ip_network(c, strict=False)), "name": ""} for c in cfg.allowlist]
-                    + [e for e in cfg.known_scanners if not is_authorization(e)])
 
     def is_internal(ip: str) -> bool:
         try:
@@ -644,7 +681,20 @@ def _classify_addresses(con, cfg: Config) -> dict[str, dict]:
         except ValueError:
             return False
         return any(addr.version == n.version and addr in n for n in internal)
+    return is_internal
 
+
+def _allow_list(cfg: Config) -> Known:
+    return Known([{"cidr": str(ipaddress.ip_network(c, strict=False)), "name": ""} for c in cfg.allowlist]
+                 + [e for e in cfg.known_scanners if not is_authorization(e)])
+
+
+def _classify_addresses(con, cfg: Config) -> dict[str, dict]:
+    """Table pw_ip(ip, internal, allowed) for every address in the flows. Internal: inside
+    ``internal_nets`` or a network_map.csv range. Allowed: in the allowlist or known_scanners.csv.
+    Returns the outside addresses on a list of published attacker addresses, with their entry."""
+    allowed = _allow_list(cfg)
+    is_internal = _internal_test(cfg)
     ips = [r[0] for r in con.execute("SELECT src_ip FROM flows UNION SELECT dst_ip FROM flows").fetchall()]
     lists = KnownBad(cfg.known_bad)
     bad = {ip: hit for ip in ips if not is_internal(ip) and (hit := lists.match(ip)) is not None}
@@ -724,6 +774,73 @@ def _outbound(con, cfg: Config, bad: dict[str, dict], start: datetime,
 
 
 MAX_CALLBACKS = 50
+MAX_WEB_LISTED = 10              # user agents, hosts or names listed per entry
+MAX_NAME_CONTACTS = 50
+
+
+def _web(con, cfg: Config, out: Detection, start: datetime, nm: NetMap) -> None:
+    """Read ``web_hits`` (the Zeek http, dns and ssl records that matched the web settings, see
+    load.py): the addresses that sent an agentic tool's user agent, and the internal hosts that
+    looked up or connected to a watched name, since ``start``. An address on the allowlist or in
+    known_scanners.csv is left out."""
+    if not _has_table(con, "web_hits"):
+        return
+    out.web_logs = {stream: int(n) for stream, n in con.execute("SELECT stream, n FROM web_logs ORDER BY 1").fetchall()}
+    is_internal, allowed = _internal_test(cfg), _allow_list(cfg)
+    clients: dict[str, dict] = {}
+    for src, tool, ua, dst, n, first, last in con.execute("""
+            SELECT src_ip, label, text, dst_ip, sum(n), min(first_ts), max(last_ts) FROM web_hits
+            WHERE kind = 'agent' AND last_ts >= ? GROUP BY ALL ORDER BY 5 DESC, 1, 3, 4""", [start]).fetchall():
+        if allowed.label(src) is not None:
+            continue
+        c = clients.setdefault(src, {"tools": {}, "uas": {}, "hosts": {}, "n": 0, "first": first, "last": last})
+        c["tools"][tool] = c["tools"].get(tool, 0) + n
+        c["uas"][ua] = c["uas"].get(ua, 0) + n
+        c["hosts"][dst] = c["hosts"].get(dst, 0) + n
+        c["n"] += n
+        c["first"], c["last"] = min(c["first"], first), max(c["last"], last)
+
+    def top(counts: dict) -> list[str]:
+        return [k for k, _ in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+
+    out.tool_clients = sorted((
+        ToolClient(source=src, internal=is_internal(src), network=nm.name(src) if is_internal(src) else "",
+                   tools=top(c["tools"]), user_agents=top(c["uas"])[:MAX_WEB_LISTED], requests=int(c["n"]),
+                   hosts=top(c["hosts"])[:MAX_WEB_LISTED], hosts_total=len(c["hosts"]),
+                   first=_iso(c["first"]), last=_iso(c["last"]))
+        for src, c in clients.items()), key=lambda t: (t.internal, -t.requests, t.source))
+    contacts: dict[tuple, dict] = {}
+    for src, label, name, stream, n, first, last in con.execute("""
+            SELECT src_ip, label, text, stream, sum(n), min(first_ts), max(last_ts) FROM web_hits
+            WHERE kind = 'name' AND last_ts >= ? GROUP BY ALL ORDER BY 5 DESC, 1, 3, 4""", [start]).fetchall():
+        if not is_internal(src) or allowed.label(src) is not None:
+            continue                     # an outside address asking for a name says nothing about your hosts
+        c = contacts.setdefault((src, label), {"names": {}, "streams": set(), "n": 0, "first": first, "last": last})
+        c["names"][name] = c["names"].get(name, 0) + n
+        c["streams"].add(stream)
+        c["n"] += n
+        c["first"], c["last"] = min(c["first"], first), max(c["last"], last)
+    found = sorted((
+        NameContact(host=src, network=nm.name(src), kind=label, names=top(c["names"])[:MAX_WEB_LISTED],
+                    seen_in=sorted(c["streams"]), records=int(c["n"]), first=_iso(c["first"]), last=_iso(c["last"]))
+        for (src, label), c in contacts.items()), key=lambda x: (-x.records, x.host, x.kind))
+    out.name_contacts, out.name_contacts_total = found[:MAX_NAME_CONTACTS], len(found)
+
+
+def _web_status(out: Detection) -> None:
+    """Say on each tool user-agent match what else its source is in this report, and put the user
+    agents on the findings."""
+    by_source = {t.source: t for t in out.tool_clients}
+    leads = ({v.source for v in out.steady_sources} | {w.source for w in out.spray_sources}
+             | {x.source for x in out.login_sources})
+    for f in out.findings:
+        t = by_source.get(f.source)
+        if t is not None:
+            t.also = "finding"
+            f.user_agents = [f"{', '.join(t.tools)}: {ua}" for ua in t.user_agents]
+    for t in out.tool_clients:
+        if not t.also and t.source in leads:
+            t.also = "lead"
 
 
 def _range_tool(cfg: Config, port) -> str:
@@ -1959,6 +2076,20 @@ def _coverage(con, cfg: Config, out: Detection) -> list[Coverage]:
         rows.append(Coverage("No overnight break", "checked" if scored_h >= cfg.nonstop.min_hours else "not checked",
                              f"the scored sessions cover {scored_h:,.1f} hours; {cfg.nonstop.min_hours:g} or more are "
                              "needed to see a source stay active that long"))
+    if not cfg.web.check:
+        rows.append(Coverage("Agentic tools' user agents, and watched names", "not checked", "web.check is off"))
+    else:
+        http = out.web_logs.get("http", 0)
+        rows.append(Coverage("Agentic tools' user agents (Zeek http.log)", "checked" if http else "not checked",
+                             f"{http:,} http records; plain HTTP only" if http
+                             else "no Zeek http.log was given; connection logs carry no user agent"))
+        seen = {k: v for k, v in out.web_logs.items() if v}
+        rows.append(Coverage("Watched names such as AI model APIs (Zeek dns, http and ssl logs)",
+                             "checked" if len(seen) == 3 else "partly checked" if seen else "not checked",
+                             ", ".join(f"{n:,} {k} records" for k, n in sorted(seen.items()))
+                             + ("" if len(seen) == 3 else "; not given: "
+                                + ", ".join(k + ".log" for k in ("dns", "http", "ssl") if k not in seen)) if seen
+                             else "no Zeek dns.log, http.log or ssl.log was given; connection logs carry no names"))
     rows.append(Coverage("Fixed-interval calls out", "checked" if cfg.beacon.check else "not checked",
                          "internal hosts' sessions out with a logged start time" if cfg.beacon.check
                          else "beacon.check is off"))

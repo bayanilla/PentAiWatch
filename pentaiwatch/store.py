@@ -44,6 +44,9 @@ _TEXT_COLUMNS = {"app", "src_zone", "dst_zone", "source", "state", "start_method
 THREAT_COLUMNS = {"ts": "TIMESTAMP", "sensor": "VARCHAR", "src_ip": "VARCHAR", "dst_ip": "VARCHAR",
                   "dst_port": "INTEGER", "name": "VARCHAR", "severity": "VARCHAR", "action": "VARCHAR",
                   "source": "VARCHAR"}
+WEB_COLUMNS = {"kind": "VARCHAR", "label": "VARCHAR", "stream": "VARCHAR", "src_ip": "VARCHAR",
+               "dst_ip": "VARCHAR", "dst_port": "INTEGER", "text": "VARCHAR", "n": "BIGINT",
+               "first_ts": "TIMESTAMP", "last_ts": "TIMESTAMP"}
 # Columns read back into Flow objects, in Flow field order.
 FLOW_SELECT = ("ts, src_ip, dst_ip, dst_port, proto, src_port, action, established, "
                "bytes_out, bytes_in, app, src_zone, dst_zone, source, state, pkts_in, start_method")
@@ -223,6 +226,15 @@ class Store:
         self.insert_rows("threats", THREAT_COLUMNS, (
             (naive(t.ts), sensor, t.src_ip, t.dst_ip, t.dst_port, t.name, t.severity, t.action, t.source)
             for sensor, t in events))
+
+    def save_web(self, hits: dict, checked: dict[str, int]) -> None:
+        """Tables ``web_hits`` (the http/dns/ssl records that matched the web settings, counted per
+        hour: {(kind, label, stream, src_ip, dst_ip, dst_port, text, hour): [n, first, last]}) and
+        ``web_logs`` (how many records of each stream were checked)."""
+        self.insert_rows("web_hits", WEB_COLUMNS, (
+            (kind, label, stream, src, dst, port, text, n, naive(first), naive(last))
+            for (kind, label, stream, src, dst, port, text, _hour), (n, first, last) in hits.items()))
+        self.insert_rows("web_logs", {"stream": "VARCHAR", "n": "BIGINT"}, checked.items())
 
     def load_flow_list(self, flows: list[Flow]):
         """Load an in-memory list (tests, small callers) as-is: no de-duplication."""

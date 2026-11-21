@@ -117,7 +117,7 @@ def run(paths: list[str], outdir: str, cfg: Config | None = None, *, config_path
         for warning in budget.warnings:
             print(f"warning: {warning}", file=sys.stderr)
         ds = load(logs, workdir=workdir, skew_seconds=cfg.dedup_skew_seconds, budget=budget,
-                  options={"paloalto": cfg.paloalto})
+                  options={"paloalto": cfg.paloalto, **({"zeek": cfg.web} if cfg.web.check else {})})
         try:
             if not ds.flows:
                 raise UserError("No sessions could be read from the input. PentAIWatch needs Zeek conn.log "

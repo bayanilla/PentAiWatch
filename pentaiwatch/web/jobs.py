@@ -94,6 +94,10 @@ def summary(res: dict) -> dict:
                            f"({c['name'] or 'published address'}), {c['sessions']:,} sessions",
                            "hosts": 1, "timeline": False, "tag": "Reached attacker"}
                           for c in res["detection"].get("outbound_contacts") or []]
+                       + [{"source": t["source"], "level": None, "label": f"{', '.join(t['tools'])} user agent in "
+                           f"{t['requests']:,} requests" + (" (internal host)" if t["internal"] else ""),
+                           "hosts": t["hosts_total"], "timeline": False, "tag": "Tool user agent"}
+                          for t in res["detection"].get("tool_clients") or [] if t.get("also") != "finding"]
                        + [{"source": b["host"], "level": None, "label": f"{b['sessions']:,} sessions out to "
                            f"{b['service']}, one every {b['gap_seconds']:g} s", "hosts": 1, "timeline": False,
                            "tag": "Calls out", "lead": b.get("status") != "flagged"}

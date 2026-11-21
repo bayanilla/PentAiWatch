@@ -29,8 +29,11 @@ results for joins on a time range, which made the detection find nothing without
 |---|---|
 | Zeek `conn.log` | TSV or JSON |
 | Palo Alto traffic log | A CSV export with a header row, or syslog lines without one |
+| Zeek `http.log`, `dns.log`, `ssl.log` (optional) | TSV or JSON, beside the `conn.log` |
 
 Give it either log or both. A session that Zeek and the firewall both recorded is counted once.
+Zeek's http, dns and ssl logs add two things connection logs cannot show; see
+[User agents and watched names](#user-agents-and-watched-names).
 The output folder gets:
 
 | File | What it is |
@@ -44,7 +47,8 @@ Give the run a name and a few lines about it with `--name "DMZ sweep review" --d
 "Case 42, asked by the SOC"`: they are shown at the top of the report and in the Explorer, and kept
 in `results.json` as `report`.
 
-Only connection metadata is read, so nothing here needs SSL decryption. The tool makes no
+Only connection metadata is read (and, when given, the user agent and host names Zeek logged), so
+nothing here needs SSL decryption. The tool makes no
 network connections, and neither do the pages it writes.
 
 ## Upload page
@@ -365,6 +369,40 @@ the clock too, so it never flags a source and never turns a lead into a flag. Th
 16 hours for it to be seen; *What could be checked* says when it does not.
 `"nonstop": {"check": false}` turns it off.
 
+### User agents and watched names
+
+Connection logs carry no user agent and no host name. When Zeek's `http.log`, `dns.log` or
+`ssl.log` are in the input beside `conn.log`, PentAIWatch checks them for two things the reporting
+describes, keeps only the matching records and sets the rest aside. Sessions still come from
+`conn.log` or the firewall, which the run needs as before.
+
+**Agentic tools' user agents** (`http.log`). The frameworks put their own name in the User-Agent
+header by default: `artex-enrich/1.0`, `artex-pentest/1.0`, `Mozilla/5.0 (Spa-api-recon)` (ARTEX);
+`CyberStrikeAI/1.7.4`, `Mozilla/5.0 (compatible; CyberStrikeAI-WebShell/1.0)`, `cyberstrike-ai/1.0`
+(CyberStrikeAI); `HexStrike-HTTP-Framework/1.0`, `HexStrike-BrowserAgent/1.0` (HexStrike AI), as
+listed by Elastic Security Labs, Threat Landscape and SentinelOne in November 2026. A request whose
+user agent contains one of the texts in `web.user_agents`, ignoring case, is a match. An address
+that sent one is listed under *Context: agentic tools' user agents*, named on sight like a
+published address: it is context, it is on a finding when the source is one, and it never turns a
+lead into a flag. An internal host on that list is running the tool itself. A user agent is
+whatever the sender writes: it can be faked, a tool that changes it is missed, and `http.log` sees
+plain HTTP only. `norma/0.4`, which ARTEX also sends, is left out because other tools share it;
+Cairn and PentAGI have no published user agent.
+
+**Watched names** (`dns.log` query, `http.log` Host, `ssl.log` server name). An internal host that
+asked for a name in `web.names`, or any name under it, is listed as a hint that flags nothing: the
+AI model APIs the FBI's notice of 13 November 2026 names (`api.anthropic.com`, `api.deepseek.com`,
+`open.bigmodel.cn`, `api.x.ai`), the reseller `xcai.pro`, and the request-capture services
+`webhook.site` and `dnslog.cn` that agents sent proof of access to. From a developer's machine an
+AI model API is ordinary; from a server it is worth a look. In `dns.log` the asker is often your
+resolver, not the host that wanted the name. An implant whose model runs on the attacker's server,
+as Kaspersky found for CyberStrikeAI, makes no such call.
+
+Both lists are settings: give a name with its own texts to add or replace an entry, or `[]` to
+drop one. *What could be checked* says which of the three logs were given.
+`"web": {"check": false}` reads those logs as before: counted and set aside. Palo Alto URL
+filtering logs are not read yet.
+
 ### Named targets
 
 The ARTEX and CyberStrikeAI reporting says what the agents went for: FortiGate and other firewall
@@ -486,6 +524,19 @@ first is used, a warning names the others, and `--config` settles it.
     "check": true,
     "min_hours": 16,
     "max_quiet_hours": 2
+  },
+  "web": {
+    "check": true,
+    "user_agents": {
+      "ARTEX": ["artex", "spa-api-recon"],
+      "CyberStrikeAI": ["CyberStrikeAI", "cyberstrike-ai/"],
+      "HexStrike AI": ["HexStrike"]
+    },
+    "names": {
+      "AI model API": ["api.anthropic.com", "api.deepseek.com", "open.bigmodel.cn", "api.x.ai"],
+      "AI model reseller named in ARTEX reporting": ["xcai.pro"],
+      "Request-capture or callback service": ["webhook.site", "dnslog.cn"]
+    }
   },
   "targets": {
     "Edge device admin or VPN": [541, 4443, 8443, 9443, 10443],
@@ -640,9 +691,11 @@ run found nothing because it could not look. The command line names the ones not
 - **Inbound behaviour, outbound by address.** The behaviour signals score outside sources
   towards internal hosts. Outbound, only sessions to published attacker addresses (flagged),
   to command-and-control ports or back to a source on an agentic tool's port (hints), and
-  fixed-interval calls out (leads) are looked at; an agent's other traffic out, such as calls
-  to an LLM API, and activity between internal hosts are not.
-- **Not flagged does not mean cleared.** Only connection metadata is read.
+  fixed-interval calls out (leads) are looked at, and with Zeek's dns, http or ssl log a host
+  asking for a watched name such as an AI model API (a hint); activity between internal hosts is
+  not.
+- **Not flagged does not mean cleared.** Only connection metadata is read, plus user agents and
+  names when Zeek's http, dns and ssl logs are given.
 - **Threat logs are read, not scored yet.** Palo Alto threat rows are counted in the report. They
   do not raise or lower a finding until the threat-log levels are built.
 - **Firewall times are read as UTC.** Palo Alto logs carry no time zone. If the firewall logs
@@ -658,7 +711,7 @@ it over.
 
 | Here | From MAX | What changed |
 |---|---|---|
-| `pentaiwatch/parsers/zeek.py` | `vulnflow/parsers/zeek.py` | Industrial-protocol handling removed. Each session keeps Zeek's raw `conn_state`, the packets sent back, and a note that its time is a start time. A `conn.log` without `conn_state` stops the run. |
+| `pentaiwatch/parsers/zeek.py` | `vulnflow/parsers/zeek.py` | Industrial-protocol handling removed. http, dns and ssl records are checked against the `web` settings and only the matches kept. Each session keeps Zeek's raw `conn_state`, the packets sent back, and a note that its time is a start time. A `conn.log` without `conn_state` stops the run. |
 | `pentaiwatch/parsers/paloalto.py` | `vulnflow/parsers/paloalto.py` | Column names, syslog positions and deny actions moved from the code into the settings. Each session gets a start time (start field, else end minus elapsed, else marked as having none) and the packets sent back. Session-start records are left out. A traffic export without a needed column stops the run instead of being read as empty. |
 | `pentaiwatch/parsers/_util.py` | `vulnflow/parsers/_util.py` | One addition: a ping (ICMP) is stored without ports by both readers, so the two logs agree on it. |
 | `pentaiwatch/store.py` | `vulnflow/store.py` | Explorer queries and Zeek event storage removed. Three session columns added: `state`, `pkts_in`, `start_method`. De-duplication is the same SQL. Two small tables added: which kinds of log recorded each source (taken before de-duplication), and the IPS alerts. |
