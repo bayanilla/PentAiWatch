@@ -78,10 +78,35 @@ def _host(item: dict) -> str:
     return f"{item['host']} ({_cell(item['network'])})" if item.get("network") else item["host"]
 
 
-def _outbound_lines(contacts: list[dict], hints: list[dict]) -> list[str]:
-    """Your hosts reaching out to attacker infrastructure: the contacts (flagged) and the
-    command-and-control port hints (not flagged)."""
-    if not contacts and not hints:
+def _callback_lines(callbacks: list[dict], total: int) -> list[str]:
+    """Calls back to a source on an agentic framework's own port (hints, not flagged)."""
+    if not callbacks:
+        return []
+    status = {"finding": "a finding in this report", "lead": "a lead in this report"}
+    lines = ["### Calls back to a source on an agentic tool's port (hints, not flagged)", "",
+             f"{_n(len({c['host'] for c in callbacks}), 'internal host')} had sessions out to an outside address "
+             "that had already connected in to one of your hosts, on the default port of an agentic pentest "
+             "framework's own server. The reporting says a compromised host calls back to the operator's server "
+             "on these ports. Ordinary services use them too, so this flags nothing on its own: look at what the "
+             "address is, and first at those that are a finding or a lead here.", "",
+             "| Internal host | Called back to | Port | Default port of | Sessions | Seen | The address came in | "
+             "The address is |", "|---|---|---|---|---|---|---|---|"]
+    for c in callbacks:
+        lines.append(f"| {_host(c)} | {c['destination']} | {c['port']}/tcp | {_cell(c['tool'])} | "
+                     f"{c['sessions']:,} ({c['answered']:,} answered) | {_when(c['first'])} to {_when(c['last'])} | "
+                     f"from {_when(c['inbound_first'])}, {_n(c['inbound_sessions'], 'session')} | "
+                     f"{status.get(c.get('source_status') or '', 'not otherwise listed')} |")
+    if total > len(callbacks):
+        lines.append(f"| and {total - len(callbacks):,} more | | | | | | | |")
+    return lines + [""]
+
+
+def _outbound_lines(contacts: list[dict], hints: list[dict], callbacks: list[dict] | None = None,
+                    callbacks_total: int = 0) -> list[str]:
+    """Your hosts reaching out to attacker infrastructure: the contacts (flagged), the
+    command-and-control port hints and the calls back to a source (neither flagged)."""
+    callbacks = callbacks or []
+    if not contacts and not hints and not callbacks:
         return []
     lines = ["## Your hosts reaching out to attacker infrastructure", ""]
     if contacts:
@@ -108,7 +133,7 @@ def _outbound_lines(contacts: list[dict], hints: list[dict]) -> list[str]:
             lines.append(f"| {_host(h)} | {h['destination']} | {h['port']}/tcp | {_cell(h['tool'])} | "
                          f"{h['sessions']:,} ({h['answered']:,} answered) | {_when(h['first'])} to {_when(h['last'])} |")
         lines.append("")
-    return lines
+    return lines + _callback_lines(callbacks, callbacks_total)
 
 
 def _read_from(files: list[dict]) -> str:
@@ -399,8 +424,11 @@ def _outbound_line(st: dict) -> str:
     if not o.get("check", True):
         return "- Outbound: not checked (outbound.check is false)."
     ports = "; ".join(f"{name} ({', '.join(str(p) for p in ports)})" for name, ports in o.get("c2_ports", {}).items())
+    tools = [f"{name} ({', '.join(str(p) for p in ports)})" for name, ports in o.get("tool_ports", {}).items()]
+    tools += [f"{name} ({ports[0]} to {ports[1]})" for name, ports in o.get("tool_port_ranges", {}).items()]
     return ("- Outbound: internal hosts' sessions to published attacker addresses are flagged; command-and-control "
-            f"ports named as hints: {ports or 'none'}.")
+            f"ports named as hints: {ports or 'none'}; agentic tools' own ports, named as hints only when the "
+            f"address had already connected in: {'; '.join(tools) or 'none'}.")
 
 
 def _targets_line(st: dict) -> str:
@@ -528,7 +556,8 @@ def markdown(res: dict) -> str:
         lines += [f"Left out of the scoring: {_n(det['never_flagged_sessions'], 'session')} from "
                   f"{_n(det['never_flagged_sources'], 'outside source')} on the allowlist or in "
                   "known_scanners.csv. The ranges are listed under Settings used.", ""]
-    lines += _outbound_lines(det.get("outbound_contacts") or [], det.get("c2_hints") or [])
+    lines += _outbound_lines(det.get("outbound_contacts") or [], det.get("c2_hints") or [],
+                             det.get("callbacks") or [], det.get("callbacks_total") or 0)
     lines += ["## Agentic activity", ""]
     # the Explorer page written next to the report, if any: {"file", "sources_drawn", "findings_drawn",
     # "timelines": the sources whose Timeline is in the page}
@@ -597,7 +626,8 @@ def markdown(res: dict) -> str:
               "flagged when a sweep or fixed-interval repetition from the same source backs it.",
               "- **Reaching out to attacker infrastructure.** An internal host with sessions out to a published "
               "attacker address is flagged; it can mean an attack worked. Sessions out to a command-and-control "
-              "tool's default port are named as a hint and flag nothing.",
+              "tool's default port are named as a hint and flag nothing. So are sessions out, on the default port "
+              "of an agentic framework's own server, to an address that had already connected in (a call back).",
               "- **Several attack paths at once** raises confidence in a Level 1 or Tier 0 finding: once it "
               "narrowed, the source's bursts worked more than one service, taking turns between them, as an "
               "agent running attack paths side by side does. It never flags a source on its own.",

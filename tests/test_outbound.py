@@ -1,7 +1,8 @@
 """Your hosts reaching out to attacker infrastructure: an internal host's sessions to a published
 attacker address are flagged; sessions to a command-and-control port (Cobalt Strike 50050, Adaptix
-4321) on any other outside address are named as a hint and flag nothing. From Zeek and from a Palo
-Alto export, and only from what those logs carry."""
+4321) on any other outside address are named as a hint and flag nothing. So are sessions out, on the
+default port of an agentic framework's own server, to an address that had already connected in. From
+Zeek and from a Palo Alto export, and only from what those logs carry."""
 import json
 import os
 import tempfile
@@ -99,6 +100,47 @@ class Outbound(unittest.TestCase):
         det, _ = self.analyze(calls_home(state="S0"))
         [c] = det["outbound_contacts"]
         self.assertEqual((c["sessions"], c["answered"]), (12, 0))
+
+    def test_a_call_back_to_a_source_on_a_tools_port_is_a_hint(self):
+        # the agent came in; later a host calls out to it on Cairn's port and in PentAGI's range
+        back = calls_home(dst=sample.AGENT, port=8000, n=6) + calls_home(dst=sample.AGENT, port=28500, n=3, src=OTHER)
+        for zeek, firewall in ((True, False), (False, True)):
+            with self.subTest(zeek=zeek, firewall=firewall):
+                det, md = self.analyze(back, zeek, firewall)
+                self.assertEqual([(c["host"], c["destination"], c["port"], c["tool"], c["sessions"], c["source_status"])
+                                  for c in det["callbacks"]],
+                                 [(VICTIM, sample.AGENT, 8000, "Cairn server", 6, "finding"),
+                                  (OTHER, sample.AGENT, 28500, "PentAGI worker", 3, "finding")])
+                self.assertEqual(det["callbacks_total"], 2)
+                self.assertEqual((det["outbound_contacts"], det["c2_hints"]), ([], []))
+                self.assertIn("### Calls back to a source on an agentic tool's port (hints, not flagged)", md)
+                self.assertIn(f"| {VICTIM} | {sample.AGENT} | 8000/tcp | Cairn server | 6 (6 answered) |", md)
+                self.assertIn("a finding in this report", md)
+                self.assertEqual([f["source"] for f in det["findings"]], [sample.AGENT])     # nothing new is flagged
+
+    def test_a_tools_port_is_not_named_without_the_address_coming_in_first(self):
+        # an address that never came in; and a call out BEFORE the address first came in
+        early = [kit.session(sample.T0 - 7200 + 60 * i, VICTIM, sample.AGENT, 8888) for i in range(5)]
+        det, md = self.analyze(calls_home(dst=ELSEWHERE, port=8000) + early)
+        self.assertEqual((det["callbacks"], det["callbacks_total"]), ([], 0))
+        self.assertNotIn("Calls back to a source", md)
+        # a published address is a contact already, with the port named there
+        det, md = self.analyze(calls_home(dst=ARTEX_HOST, port=8787)
+                               + [kit.session(sample.T0 + 100, ARTEX_HOST, VICTIM, 443)])
+        self.assertEqual(det["callbacks"], [])
+        self.assertEqual(det["outbound_contacts"][0]["c2"], ["ARTEX console"])
+
+    def test_tool_port_settings(self):
+        det, _ = self.analyze(calls_home(dst=sample.AGENT, port=9999),
+                              settings={"outbound": {"tool_ports": {"Our lab": [9999]}}})
+        self.assertEqual([c["tool"] for c in det["callbacks"]], ["Our lab"])
+        det, _ = self.analyze(calls_home(dst=sample.AGENT, port=8000),
+                              settings={"outbound": {"tool_ports": {"Cairn server": []}}})
+        self.assertEqual(det["callbacks"], [])
+        for bad in ({"tool_port_ranges": {"x": [5, 4]}}, {"tool_port_ranges": {"x": [1, 2, 3]}},
+                    {"tool_ports": {"x": [70000]}}):
+            with self.assertRaises(UserError):
+                self.analyze([], settings={"outbound": bad})
 
     def test_allowlisted_destinations_and_the_switch(self):
         det, _ = self.analyze(calls_home(), settings={"allowlist": [ARTEX_HOST]})

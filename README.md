@@ -321,8 +321,16 @@ many sessions it answered and when. These come first in the report.
 
 Censys found Cobalt Strike (port 50050) and Adaptix C2 (port 4321) on ARTEX hosts. A session from
 an internal host to any other outside address on one of those ports is named as a hint, under
-`outbound.c2_ports`, and flags nothing: anything can listen on a port. The ARTEX console's own
-ports (8787, 18080, 8081, 18899) are left out because ordinary services use them too. Set
+`outbound.c2_ports`, and flags nothing: anything can listen on a port.
+
+The agentic frameworks' own servers have default ports too: the ARTEX console on 8787, Cairn on
+8000, HexStrike AI on 8888, and PentAGI's workers on 28000 to 30000 (Threat Landscape and Elastic
+Security Labs, November 2026). Elastic reports that compromised hosts call back to the operator's
+server on them. Ordinary services use these ports far more often, so a session out on one is named
+only when the outside address had already connected in to one of your hosts: a call back to a
+source. It is a hint, flags nothing, and says whether that address is a finding or a lead in the
+same report. The ports are `outbound.tool_ports` and `outbound.tool_port_ranges` (a first and a
+last port); the 50 groups with the most answered sessions are listed. Set
 `"outbound": {"check": false}` to skip all of this. A destination on the allowlist or in
 `known_scanners.csv` is left out, as it is for sources.
 
@@ -427,6 +435,14 @@ first is used, a warning names the others, and `--config` settles it.
     "c2_ports": {
       "Cobalt Strike teamserver": [50050],
       "Adaptix C2": [4321]
+    },
+    "tool_ports": {
+      "ARTEX console": [8787],
+      "Cairn server": [8000],
+      "HexStrike AI server": [8888]
+    },
+    "tool_port_ranges": {
+      "PentAGI worker": [28000, 30000]
     }
   },
   "targets": {
@@ -581,7 +597,7 @@ run found nothing because it could not look. The command line names the ones not
   pauses and can go unflagged.
 - **Inbound behaviour, outbound by address.** The behaviour signals score outside sources
   towards internal hosts. Outbound, only sessions to published attacker addresses (flagged) and
-  to command-and-control ports (hints) are looked at; an agent's other traffic out, such as calls
+  to command-and-control ports or back to a source on an agentic tool's port (hints) are looked at; an agent's other traffic out, such as calls
   to an LLM API, and activity between internal hosts are not.
 - **Not flagged does not mean cleared.** Only connection metadata is read.
 - **Threat logs are read, not scored yet.** Palo Alto threat rows are counted in the report. They
