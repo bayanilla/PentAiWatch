@@ -65,11 +65,15 @@ def main(argv=None) -> int:
     steady = res["detection"].get("steady_sources") or []
     spray = res["detection"].get("spray_sources") or []
     rotations = res["detection"].get("rotations") or []
-    total = len({x["source"] for x in found + known + steady + spray}
-                | {ip for g in rotations for ip in [g["sweeper"]] + [j["source"] for j in g["joiners"]]})
+    flagged = lambda items: [x for x in items if x.get("status") == "flagged"]
+    total = len({x["source"] for x in found + known + flagged(steady) + flagged(spray)}
+                | {ip for g in flagged(rotations) for ip in [g["sweeper"]] + [j["source"] for j in g["joiners"]]})
+    leads = len({x["source"] for x in steady + spray if x.get("status") != "flagged"}
+                | {g["sweeper"] for g in rotations if g.get("status") != "flagged"})
     reached = len({c["host"] for c in res["detection"].get("outbound_contacts") or []})
     print(f"{res['sessions']:,} sessions read; {total} source{'' if total == 1 else 's'} flagged"
-          + (f"; {reached} internal host{'' if reached == 1 else 's'} reached attacker addresses." if reached else "."))
+          + (f"; {reached} internal host{'' if reached == 1 else 's'} reached attacker addresses" if reached else "")
+          + (f"; {leads} lead{'' if leads == 1 else 's'} to look at (not flagged)." if leads else "."))
     for f in found:
         tier = "tier 0" if f["level"] == 0 else f"level {f['level']}"
         hosts = len(f["hosts_hit"])
@@ -81,14 +85,14 @@ def main(argv=None) -> int:
               f"({k['hosts']} host{'' if k['hosts'] == 1 else 's'} reached)")
     for v in steady:
         r = v["runs"][0]
-        print(f"  {v['source']}  machine-steady repetition: {r['sessions']} sessions to {r['service']}, "
+        print(f"  {v['source']}  fixed-interval repetition ({v['status']}): {r['sessions']} sessions to {r['service']}, "
               f"one every {r['gap_seconds']:g} s")
     for v in spray:
         r = v["runs"][0]
-        print(f"  {v['source']}  high-rate login spray: {r['sessions']} sessions to {r['service']}, "
+        print(f"  {v['source']}  high-rate repeated connections ({v['status']}): {r['sessions']} sessions to {r['service']}, "
               f"up to {r['peak_per_minute']} a minute")
     for g in rotations:
-        print(f"  {g['sweeper']}  rotating sources: {', '.join(j['source'] for j in g['joiners'])} came back to "
+        print(f"  {g['sweeper']}  rotating sources ({g['status']}): {', '.join(j['source'] for j in g['joiners'])} came back to "
               "what it swept")
     for c in res["detection"].get("outbound_contacts") or []:
         print(f"  {c['host']}  reached attacker address {c['destination']}: {c['name'] or 'listed'}  "

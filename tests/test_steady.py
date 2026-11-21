@@ -1,4 +1,4 @@
-"""Machine-steady repetition: one source hitting one service over and over at an almost constant gap,
+"""Fixed-interval repetition: one source hitting one service over and over at an almost constant gap,
 as CyberStrikeAI's scripted FortiGate logins did (one every 1.5 seconds). Checked from Zeek, from a
 Palo Alto export (whole-second times) and both, against near misses that must not fire."""
 import json
@@ -57,7 +57,7 @@ class Steady(unittest.TestCase):
                 self.assertEqual(run_["whole_seconds"], not zeek)
                 self.assertEqual([f["source"] for f in det["findings"]], [sample.AGENT])
                 self.assertIn(f"| {BRUTE} |", md)
-                self.assertIn("### Machine-steady repetition", md)
+                self.assertIn("### Fixed-interval repetition", md)
 
     def test_small_jitter_still_counts_and_large_does_not(self):
         det, _ = self.analyze(sample.sessions() + brute(jitter=0.1))
@@ -66,13 +66,13 @@ class Steady(unittest.TestCase):
         self.assertNotIn(BRUTE, self.steady(det))
 
     def test_near_misses(self):
-        cases = {"too few in a row": brute(n=49), "too slow": brute(gap=12),
-                 "broken by a pause": brute(n=40) + brute(n=40, start=9000 + 40 * 1.5 + 30)}
+        cases = {"too few in a row": brute(n=29), "too slow": brute(gap=12),
+                 "broken by a pause": brute(n=25) + brute(n=25, start=9000 + 25 * 1.5 + 30)}
         for why, extra in cases.items():
             with self.subTest(why):
                 det, md = self.analyze(sample.sessions() + extra)
                 self.assertEqual(det["steady_sources"], [], why)
-                self.assertNotIn("### Machine-steady repetition", md)
+                self.assertNotIn("### Fixed-interval repetition", md)
 
     def test_the_sample_traffic_has_none(self):
         det, _ = self.analyze(sample.sessions())          # the agent's bursts are uneven on purpose
@@ -101,7 +101,7 @@ class Steady(unittest.TestCase):
         self.assertEqual(f["source"], sample.AGENT)
         self.assertEqual([r["sessions"] for r in f["steady"]], [120])
         self.assertEqual(det["steady_sources"], [])
-        self.assertIn("| Machine-steady repetition | 10.10.1.11:8443/tcp (Edge device admin or VPN): 120 sessions", md)
+        self.assertIn("| Fixed-interval repetition | 10.10.1.11:8443/tcp (Edge device admin or VPN): 120 sessions", md)
 
     def test_known_scanners_are_left_out(self):
         det, _ = self.analyze(sample.sessions() + brute(), settings={"allowlist": [BRUTE]})
@@ -110,7 +110,7 @@ class Steady(unittest.TestCase):
     def test_settings(self):
         det, md = self.analyze(sample.sessions() + brute(n=30), settings={"steady": {"min_sessions": 25}})
         self.assertIn(BRUTE, self.steady(det))
-        self.assertIn("Machine-steady repetition: 25+ sessions in a row", md)
+        self.assertIn("Fixed-interval repetition (timing pattern b, and a lead on its own): 25+ sessions in a row", md)
         with self.assertRaisesRegex(UserError, "steady.min_sessions must be 3 or more"):
             self.analyze(sample.sessions(), settings={"steady": {"min_sessions": 2}})
 

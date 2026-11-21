@@ -15,7 +15,7 @@ What is checked:
    no code with PentAIWatch.
 2. The TSV and JSON forms of the log give the same result.
 3. Nothing in the capture itself is flagged as agentic, and the other signals (published
-   addresses, machine-steady repetition, high-rate spray, rotating sources) find what EXPECTED
+   addresses, fixed-interval repetition, high-rate repeated connections, rotating sources) find what EXPECTED
    says, from every form of the log. One source sweeps and then narrows, an nmap run: a
    ping sweep, a port scan, then service detection on what answered. Its pace is what tells it
    from an agentic tool, and the bursts and pauses PentAIWatch counts for it are the ones the
@@ -74,9 +74,12 @@ EXPECTED = {
     # services with completed connections, well over one a second for minutes: a web server's port 80
     # (10.128.0.248, up to 179 a minute) and web and VNC ports on several hosts (10.164.94.120, up to
     # 411 a minute). That is the brute force the spray signal is for. Nothing is on the published
-    # address lists, nothing keeps a machine-steady gap, and no sweep is followed by new addresses.
+    # address lists, nothing keeps a fixed-interval gap, and no sweep is followed by new addresses.
     # No competition host reached a published attacker address or a command-and-control port out.
-    "other_signals": {"known": [], "steady": [], "spray": ["10.128.0.248", "10.164.94.120"], "rotation": [],
+    # Neither swept, so on their own both are leads, not flags: connection logs alone cannot tell
+    # them from a busy integration. That is the price of keeping integrations from being flagged.
+    "other_signals": {"known": [], "steady": [], "spray": ["10.128.0.248", "10.164.94.120"], "spray_flagged": [],
+                      "rotation": [],
                       "outbound": [], "c2_hints": []},
     # with the synthetic agent added: [source, level], the same from every form of the log
     "with_agent_flagged": [[sample.AGENT, 1]],
@@ -201,6 +204,8 @@ def summary(res: dict) -> dict:
             "other_signals": {"known": sorted(k["source"] for k in d.get("known_sources") or []),
                               "steady": sorted(v["source"] for v in d.get("steady_sources") or []),
                               "spray": sorted(v["source"] for v in d.get("spray_sources") or []),
+                              "spray_flagged": sorted(v["source"] for v in d.get("spray_sources") or []
+                                                      if v.get("status") == "flagged"),
                               "rotation": sorted(g["sweeper"] for g in d.get("rotations") or []),
                               "outbound": sorted(c["host"] for c in d.get("outbound_contacts") or []),
                               "c2_hints": sorted(h["host"] for h in d.get("c2_hints") or [])}}

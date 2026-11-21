@@ -238,7 +238,8 @@ class ReportTests(Base):
         self.assertIn(f"| Timing fired in | the 2 hours from {start}: {t['window_bursts']:,} such bursts, and "
                       f"{t['window_pause_share']:.0%} of all the pauses in that window in the band |", md)
         self.assertIn("1 outside source swept your hosts, returned only to the services that answered, and worked "
-                      "in short bursts separated by 20 to 35 second pauses", md)
+                      "at a machine's pace: short bursts separated by 20 to 35 second pauses", md)
+        self.assertIn("| Timing pattern | burst and pause |", md)
         self.assertIn("- **Level 1. Agentic behaviour.**", md)
         self.assertIn("- Timing: a gap of more than 15 seconds between session starts ends a burst.", md)
         self.assertIn("Timing reads when sessions start and nothing inside them.", md)
@@ -253,8 +254,8 @@ class ReportTests(Base):
         self.assertEqual((res["detection"]["probing_sources"], res["detection"]["narrowing_sources"]), (3, 2))
         with open(paths["report.md"], encoding="utf-8") as fh:
             md = fh.read()
-        self.assertIn("1 other source swept and then narrowed, but not in short bursts and 20 to 35 second pauses. "
-                      "That looks like a scanner following up on what it found, or a person at work, and is not "
+        self.assertIn("1 other source swept and then narrowed, but not in short bursts and 20 to 35 second pauses "
+                      "or at a fixed interval. That looks like a scanner following up on what it found, or a person at work, and is not "
                       "flagged.", md)
         self.assertIn("1 other source swept many hosts or ports and did not narrow.", md)
         self.assertNotIn(sample.FOLLOWER, md)

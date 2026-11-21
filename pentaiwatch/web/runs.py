@@ -150,11 +150,13 @@ def _done(app, run_id: str, status: dict, where: str, heading: str) -> str:
     out = app.run_out(run_id)
     have = lambda name: os.path.isfile(os.path.join(out, name))
     reached = {str(f.get("source")) for f in flagged if f.get("tag") == "Reached attacker"}
-    sources = {str(f.get("source")) for f in flagged if f.get("tag") != "Reached attacker"}
+    sources = {str(f.get("source")) for f in flagged if f.get("tag") != "Reached attacker" and not f.get("lead")}
+    leads = {str(f.get("source")) for f in flagged if f.get("lead")} - sources
     lines = [f'<h1><img class="mark" src="{MARK}" alt="">Results{heading}</h1>', where,
              f"<p><strong>{_plural(int(summary.get('sessions') or 0), 'session')} read; "
              f"{_plural(len(sources), 'source')} flagged"
              + (f"; {_plural(len(reached), 'internal host')} reached attacker addresses" if reached else "")
+             + (f"; {_plural(len(leads), 'lead')} to look at" if leads else "")
              + ".</strong></p>"]
     if flagged:
         items = []
@@ -162,7 +164,7 @@ def _done(app, run_id: str, status: dict, where: str, heading: str) -> str:
             ip = str(f.get("source") or "")
             level = f.get("level")
             tag = (str(f.get("tag") or "Published address") if level is None
-                   else "Tier 0" if level == 0 else f"Level {level}")
+                   else "Tier 0" if level == 0 else f"Level {level}") + (" (lead)" if f.get("lead") else "")
             link = quote(ip, safe=":.")
             extras = ([] if level is None else
                       [f'<a href="explorer.html#source={link}" target="_blank" rel="noopener">on the map</a>'])
@@ -221,7 +223,8 @@ def recent_html(app) -> str:
     for run_id, status, live in rows:
         st = state(status, live)
         summary = status.get("summary") if isinstance(status.get("summary"), dict) else {}
-        flagged = (len({str(f.get("source")) for f in summary.get("flagged") or [] if isinstance(f, dict)})
+        flagged = (len({str(f.get("source")) for f in summary.get("flagged") or []
+                        if isinstance(f, dict) and not f.get("lead")})
                    if st == "done" else None)
         body.append(f'<tr><td class="when"><a href="/runs/{quote(run_id)}/">{_local(status.get("started")) or html.escape(run_id)}</a></td>'
                     f"<td>{f'<strong>{html.escape(_name(status))}</strong><br>' if _name(status) else ''}"

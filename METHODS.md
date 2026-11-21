@@ -135,8 +135,11 @@ For a window where probing fired, narrowing fires when all of these hold:
 ## Signal 3: timing
 
 An agentic tool works in steps: a few connections, then a pause while the model decides what to
-do next. Timing looks for that rhythm in the START times of a source's sessions (see "Start
-times"), for every source where narrowing fired.
+do next. A tool-driven one steps at a fixed interval. Timing looks for either rhythm in the START
+times of a source's sessions (see "Start times"), for every source where narrowing fired, and the
+finding names the pattern that fired: *burst and pause*, *fixed-interval cadence*, or both.
+
+### Pattern a: burst and pause
 
 - **Bursts.** The source's sessions are put in order of start time. A gap of more than
   `burst_gap_seconds` (15) between two starts ends a burst. A burst is *short* when it has at most
@@ -154,11 +157,32 @@ Timing fires in a scoring window when both of these hold for the pauses that beg
 The pauses need not be alike, and long breaks do no harm: a campaign that stops for an hour adds
 one pause that is not in the band.
 
+### Pattern b: fixed-interval cadence
+
+A run of `steady.min_sessions` (30) or more sessions from the source to one service, each started
+within `steady.max_gap_seconds` (10) of the one before, whose gaps vary by no more than
+`steady.max_jitter` (10%) of their mean (CyberStrikeAI's FortiGate logins came every 1.5 seconds).
+On whole-second firewall start times a 1.5-second step reads as gaps of 1 and 2, so a run whose gaps
+are all one of two neighbouring whole seconds, a second or more apart, counts too. Only LOGGED start
+times are used: Zeek's ts or the firewall's start field. A start worked out as end minus whole
+elapsed seconds cannot tell a 1.5-second step from jitter, so those sessions are never read for
+this pattern; when a source swept and narrowed on such times and the burst pattern did not fit, a
+warning says the cadence could not be checked.
+
+A tool can also step through what answered at a fixed rate, a few sessions per service
+(CyberStrikeAI fingerprinted management ports every 2 seconds). No one service then gets a run, so
+the same test is also made on all of the source's sessions in turn, from the end of its sweep:
+`steady.min_sessions` (30) or more in a row, whatever service each went to. The sweep itself is left
+out, because a scanner probing at a fixed rate is not this. The finding gives the interval and the
+service of the longest run (or "N services in turn"), and says when its times were whole seconds.
+
+### Result
+
 A source where probing and narrowing fired is then one of three things:
 
 | Timing | Result |
 |---|---|
-| Fired in at least one window | Level 1 |
+| Either pattern fired | Level 1 |
 | Did not fire, and fewer than `min_timed_share` (90%) of the source's sessions have a start time. Usually none has: a Palo Alto export with neither a start nor an elapsed time | Tier 0. The pace could not be judged, and the finding says how many sessions could be timed |
 | Did not fire, and the source was seen nearly whole | Not flagged. It swept and narrowed at some other pace: a scanner following up on what it found, or a person. The report counts these sources and the Explorer draws them |
 
@@ -175,12 +199,34 @@ only for pauses at the very edge of the band.
 
 | | Meaning |
 |---|---|
-| Level 1. Agentic behaviour | Probing, narrowing and timing all fired. |
+| Level 1. Agentic behaviour | Probing, narrowing and timing (either pattern) all fired. |
 | Tier 0. Sweep and narrow seen, timing unavailable | Probing and narrowing fired. Timing could not be judged, because the sessions have no start time. |
 
 Levels 2 and 3 need the scoring of Palo Alto threat logs, which is not built yet. A finding says
 "threat logs not provided" when the run had none, and "threat logs were read but are not scored
 yet" when it had some, so a low level is never read as "no exploit attempts".
+
+## Leads: one behaviour on its own
+
+Three behaviours are reported for sources that are not findings: fixed-interval repetition (pattern
+b on its own), high-rate repeated connections, and rotating sources. Each has an ordinary
+look-alike from connection logs alone: a health check keeps a fixed interval, a busy integration
+sends a flood of completed connections, and clients or monitoring that start near someone's sweep
+come straight back to what it found. A completed connection reached the service; whether it was a
+login, and whether the login failed, only that service's log shows. So each is a **lead** on its
+own, and **flagged** only when evidence from other sessions of the same source backs it:
+
+| Behaviour | Backed by |
+|---|---|
+| Fixed-interval repetition | the source swept (signal 1 fired), or it shows high-rate repeated connections on a different service |
+| High-rate repeated connections | the source swept, or it shows fixed-interval repetition on a different service |
+| Rotating sources | the sweeping address is a finding, or it shows fixed-interval repetition or high-rate repeated connections itself |
+
+The same stream measured twice does not count: a fast health check is both fixed-interval and high
+rate on one service. A joiner's own repetition is what made it a joiner, so it never backs its
+rotation. A published-address match is shown beside a lead and never backs it. results.json gives
+`status` ("flagged" or "lead") and `backed_by` on each entry of `steady_sources`, `spray_sources`
+and `rotations`.
 
 ## What the Explorer draws
 
