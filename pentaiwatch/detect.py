@@ -367,6 +367,14 @@ class AuthorizedSource:
 
 
 @dataclass
+class Coverage:
+    """How far the data let one detector work: "checked", "partly checked" or "not checked"."""
+    detector: str
+    status: str
+    detail: str
+
+
+@dataclass
 class Detection:
     findings: list[Finding] = field(default_factory=list)
     known_sources: list[KnownSource] = field(default_factory=list)
@@ -374,6 +382,8 @@ class Detection:
     spray_sources: list[SpraySource] = field(default_factory=list)
     rotations: list[Rotation] = field(default_factory=list)
     shared_sweeps: list[SharedSweep] = field(default_factory=list)
+    # per detector, how far the data let it work: a quiet detector that could not run is not a clean bill
+    coverage: list[Coverage] = field(default_factory=list)
     # sources a known_scanners.csv authorization covers (owner, expiry, scope): scored, not flagged
     authorized: list[AuthorizedSource] = field(default_factory=list)
     # sweeps that found services but began too soon after the start of the data to tell whether later
@@ -488,6 +498,7 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
             out.steady_sources.sort(key=lambda v: v.status == "regular")
             out.spray_sources.sort(key=lambda v: v.status == "regular")
         _authorize(con, cfg, out)
+        out.coverage = _coverage(con, cfg, out)
         listed_but_allowed = sorted(ip for ip in bad if ip in _allowed(con))
         if listed_but_allowed:
             out.warnings.append(f"{len(listed_but_allowed)} source(s) on a list of published attacker addresses are "
@@ -1553,6 +1564,46 @@ def log_sources(con, src: str) -> list[str]:
             return found
     return [r[0] for r in con.execute(
         "SELECT DISTINCT sensor FROM pw_sessions WHERE src_ip = ? ORDER BY 1", [src]).fetchall()]
+
+
+def _coverage(con, cfg: Config, out: Detection) -> list[Coverage]:
+    """Per detector, whether the scored sessions let it work, and why not where they did not."""
+    total = out.inbound_sessions
+    by = dict(con.execute("SELECT start_method, count(*) FROM pw_sessions GROUP BY 1").fetchall())
+    timed = sum(int(by.get(m, 0)) for m in TIMED)
+    logged = sum(int(by.get(m, 0)) for m in CADENCE_TIMED)
+    span_h = (con.execute("SELECT epoch(max(ts)) - epoch(min(ts)) FROM flows").fetchone()[0] or 0) / 3600
+
+    def share(n: int, what: str) -> Coverage:
+        status = "checked" if n == total else "partly checked" if n else "not checked"
+        return Coverage("", status, f"{n:,} of {total:,} sessions {what}")
+
+    rows = [Coverage("Sweep and narrowing (signals 1 and 2)", "checked", f"all {total:,} sessions")]
+    a = share(timed, "have a start time (logged, or the end minus elapsed seconds)")
+    a.detector = "Timing pattern a: burst and pause"
+    b = share(logged, "have a logged start time; a start worked out from whole elapsed seconds is too coarse")
+    b.detector = "Timing pattern b and fixed-interval repetition"
+    rows += [a, b, Coverage("High-rate repeated connections", "checked", "minutes are counted on any session time")]
+    rows.append(Coverage("Rotating sources", "partly checked" if out.rotation_unchecked else "checked",
+                         f"{out.rotation_unchecked:,} sweep(s) began less than {cfg.rotation.quiet_before_hours:g} hours "
+                         "after the start of the data, so whether later addresses were new cannot be told"
+                         if out.rotation_unchecked else "every sweep had the quiet period before it in the data"))
+    rows.append(Coverage("Shared sweeps", "checked" if cfg.shared_sweep.check else "not checked",
+                         "IPv4 /24s only" if cfg.shared_sweep.check else "shared_sweep.check is off"))
+    if not cfg.baseline.check:
+        rows.append(Coverage("Regular clients", "not checked", "baseline.check is off"))
+    else:
+        rows.append(Coverage("Regular clients", "checked" if span_h >= cfg.baseline.before_hours else "not checked",
+                             f"the data covers {span_h:,.1f} hours; {cfg.baseline.before_hours:g} or more are needed to "
+                             "see a client's earlier use of a service"))
+    threats = _threat_text(con)
+    rows.append(Coverage("Levels 2 and 3 (threat logs)", "not checked", threats))
+    rows.append(Coverage("Published attacker addresses (context, not behaviour)", "checked",
+                         f"{len(cfg.known_bad):,} listed addresses or ranges"
+                         + (", the bundled list included" if cfg.known_bad_bundled else ", the bundled list off")))
+    rows.append(Coverage("Outbound to attacker infrastructure", "checked" if cfg.outbound.check else "not checked",
+                         "internal hosts' sessions out" if cfg.outbound.check else "outbound.check is off"))
+    return rows
 
 
 def _threat_text(con) -> str:

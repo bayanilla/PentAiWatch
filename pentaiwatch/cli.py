@@ -116,6 +116,9 @@ def main(argv=None) -> int:
     hints = res["detection"].get("c2_hints") or []
     if hints:
         print(f"  {len(hints)} outbound session group(s) to command-and-control ports (hints, see the report)")
+    for row in res["detection"].get("coverage") or []:
+        if row["status"] != "checked" and not row["detector"].startswith("Levels 2 and 3"):
+            print(f"  {row['status']}: {row['detector']} ({row['detail']})")
     print(f"Report:   {paths['report.html']}")
     print(f"Explorer: {paths['explorer.html']}")
     return 0

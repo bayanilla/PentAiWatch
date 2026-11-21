@@ -193,8 +193,10 @@ never downloads it.
 
 A source on that list, or on your own `known_bad.csv`, that reached an internal host is flagged
 whatever its traffic looked like. When its traffic also fired the three signals, its finding says
-it is a published address; otherwise it is listed under *Published attacker addresses* in the
-report, with its sessions, the services it reached and the list's entry. The allowlist and
+it is a published address; otherwise it is listed under *Context: published attacker addresses*
+in the report, with its sessions, the services it reached and the list's entry. That section is
+kept apart from the behavioural findings: a match says who published the address, not what it
+did, and it never backs a lead. The allowlist and
 `known_scanners.csv` still win, with a warning. Some of these addresses are attacker servers and
 VPN exits rather than scanners, and the low-confidence Censys rows are hosts seen running the tools,
 not seen attacking: read the confidence before acting on a match. Set `known_bad_bundled` to
@@ -533,6 +535,13 @@ VulnScope MAX's does:
 - **Runs are private.** The runs folder and every file in it are readable by you alone.
 
 ## Known limitations
+
+The report's *What could be checked* table says, for each detector, whether this run's data let it
+work, and why not where it did not: timing pattern a needs a start time (logged, or the end minus
+elapsed seconds), timing pattern b and fixed-interval repetition need a logged start time, rotating
+sources need the quiet period before each sweep in the data, regular clients need
+`baseline.before_hours` of data, and levels 2 and 3 need threat logs. A detector that could not
+run found nothing because it could not look. The command line names the ones not fully checked.
 
 - **Proxy rotation splits campaigns.** These tools rotate through residential, datacenter and
   free proxies or Tor when blocked. Scoring is per source address, so one campaign can be split
