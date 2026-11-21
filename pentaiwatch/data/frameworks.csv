@@ -1,0 +1,31 @@
+# MITRE ATT&CK and MITRE ATLAS labels for PentAIWatch's detectors. Labels only: nothing here changes
+# what is detected or flagged. Every id and name was read from MITRE's published data:
+#   ATT&CK  Enterprise ATT&CK 20.1   github.com/mitre-attack/attack-stix-data (enterprise-attack.json)
+#   ATLAS   ATLAS 2026.10            github.com/mitre-atlas/atlas-data (dist/v6/ATLAS-2026.10.yaml)
+# detector: a key from pentaiwatch/frameworks.py DETECTORS. framework: attack, atlas, or none (a
+# detector that describes no technique, with the reason in why). fit: direct (the detector sees the
+# technique itself) or possible (the behaviour is consistent with it; connection logs cannot confirm it).
+detector,framework,id,name,tactic,fit,why
+sweep,attack,T1595,Active Scanning,Reconnaissance,direct,An outside source tried many services and most attempts failed
+sweep,attack,T1595.001,Scanning IP Blocks,Reconnaissance,direct,The sweep covered many hosts and ports in your ranges
+sweep,atlas,AML.T0116,Autonomous Reconnaissance,Reconnaissance,possible,The source swept then returned only to what answered: each step chosen from the last result. The logs cannot show whether an agent or a person chose
+burst_pause,atlas,AML.T0117,Autonomous Attack-Path Adaptation,AI Attack Adaptation,possible,Bursts of sessions with pauses between them match an agent's act then decide cycle. The logs cannot show what happened in the pause
+steady,none,,,,,A machine-like tempo and not a technique: neither framework has an entry for regular spacing alone
+spray,attack,T1110,Brute Force,Credential Access,possible,Many attempts a minute on one service. Connection logs do not show whether they were logins
+login_spray,attack,T1110.003,Password Spraying,Credential Access,direct,Repeated short sessions with failed-login reply sizes on a login service
+rotation,attack,T1090,Proxy,Command and Control,possible,New addresses came straight back to what one sweep found: the usual sign of one operator behind several proxies
+shared_sweep,attack,T1595.001,Scanning IP Blocks,Reconnaissance,direct,Several addresses of one /24 divided a sweep between them
+shared_sweep,atlas,AML.T0124,Autonomous Attack Orchestration,AI Attack Adaptation,possible,Work divided between sources without overlap is what an orchestrating agent does. A scripted scanner pool does the same
+known_bad,none,,,,,An indicator and not a behaviour: the address is on a published list
+nonstop,none,,,,,Extra evidence and not a technique: activity with no overnight break
+tool_user_agent,attack,T1588.007,Artificial Intelligence,Resource Development,direct,The sender named an agentic AI tool in its user agent
+tool_user_agent,atlas,AML.T0016.004,AI Agent Tools,Resource Development,direct,The sender named an agentic AI tool in its user agent
+tool_user_agent,atlas,AML.T0103,Deploy AI Agent,Execution,possible,Applies when the sender is one of your own hosts: the tool is running inside your network
+watched_names,atlas,AML.T0102,Generate Malicious Commands,AI Attack Adaptation,possible,An internal host called an AI model API. From a server this can be an implant asking a model what to run; from a developer's machine it is ordinary
+watched_names,atlas,AML.T0096,AI Service API,Command and Control,possible,An internal host called an AI model API which can carry an operator's commands inside normal-looking traffic
+watched_names,atlas,AML.T0008.005,AI Service Proxies,Resource Development,possible,Applies to the reseller entry: a proxy that hides which AI accounts are behind it
+watched_names,attack,T1567,Exfiltration Over Web Service,Exfiltration,possible,Applies to the request-capture entries: agents sent proof of access to such services
+beacon,attack,T1071,Application Layer Protocol,Command and Control,possible,An internal host called one outside service at a fixed short interval
+beacon,atlas,AML.T0072,Cyber Communication Channel,Command and Control,possible,An internal host called one outside service at a fixed short interval
+outbound,attack,T1571,Non-Standard Port,Command and Control,possible,An internal host opened a session to a command-and-control or agentic tool port
+outbound,atlas,AML.T0072,Cyber Communication Channel,Command and Control,possible,An internal host opened a session to published attacker infrastructure or to a tool's own port
