@@ -144,9 +144,12 @@ def _targets_note(item: dict) -> str:
 
 
 def _status(item: dict) -> str:
-    """'Flagged: also ...' or 'Lead', for a standalone behaviour."""
+    """'Flagged: also ...', 'Regular client (since ...)' or 'Lead', for a standalone behaviour."""
     if item.get("status") == "flagged":
         return f"Flagged: also {_all(item.get('backed_by') or [])}"
+    if item.get("status") == "regular":
+        since = min(r["regular_since"] for r in item["runs"] if r.get("regular_since"))
+        return f"Regular client (since {_when(since)})"
     return "Lead"
 
 
@@ -155,7 +158,12 @@ def _steady_run(r: dict) -> str:
               and r["jitter"] > 0 else f"gaps vary by {r['jitter']:.0%}")
     kind = f" ({r['target']})" if r.get("target") else ""
     return (f"{r['service']}{kind}: {r['sessions']:,} sessions, one every {r['gap_seconds']:g} s "
-            f"({spread}), {r['answered']:,} answered, {_when(r['first'])} to {_when(r['last'])}")
+            f"({spread}), {r['answered']:,} answered, {_when(r['first'])} to {_when(r['last'])}"
+            + _regular_since(r))
+
+
+def _regular_since(r: dict) -> str:
+    return f"; repeated to it since {_when(r['regular_since'])}" if r.get("regular_since") else ""
 
 
 def _parallel_row(p: dict) -> str:
@@ -206,7 +214,7 @@ def _spray_run(r: dict) -> str:
     kind = f" ({r['target']})" if r.get("target") else ""
     return (f"{r['service']}{kind}: {r['sessions']:,} sessions in {r['minutes']:,} minutes at "
             f"{r['peak_per_minute']:,} a minute at the peak, {r['answered']:,} completed, {_when(r['first'])} to "
-            f"{_when(r['last'])}")
+            f"{_when(r['last'])}" + _regular_since(r))
 
 
 def _spray_lines(spray: list[dict], st: dict) -> list[str]:
@@ -221,13 +229,21 @@ def _spray_lines(spray: list[dict], st: dict) -> list[str]:
              "to 2,900 failed logins a minute from one Storm-0940 address), and also with a busy integration. "
              "The connections show how hard it hit, not whether logins were tried or failed: check that "
              "service's own log. On its own this is a lead; it is flagged when another behaviour of the same "
-             "source backs it.", "",
+             f"source backs it. {_regular_note(st)}", "",
              "| Source | Status | Built from | Services |", "|---|---|---|---|"]
     for v in spray:
         more = f"; and {v['runs_total'] - len(v['runs']):,} more" if v["runs_total"] > len(v["runs"]) else ""
         lines.append(f"| {v['source']} | {_status(v)} | {_all([SOURCE_TEXT.get(x, x) for x in v['log_sources']])} | "
                      f"{'; '.join(_spray_run(r) for r in v['runs'])}{more} |")
     return lines + [""]
+
+
+def _regular_note(st: dict) -> str:
+    b = st.get("baseline") or {}
+    if not b.get("check"):
+        return ""
+    return (f"A lead whose every run goes to a service the same source already used {b['min_sessions']}+ times at "
+            f"least {b['before_hours']:g} hours before the end of its latest run there is a regular client, listed last.")
 
 
 def _steady_lines(steady: list[dict], st: dict) -> list[str]:
@@ -240,13 +256,23 @@ def _steady_lines(steady: list[dict], st: dict) -> list[str]:
              f"{s['min_sessions']}+ sessions in a row, each within {s['max_gap_seconds']:g} seconds of the last, with "
              f"gaps that vary by no more than {s['max_jitter']:.0%}. A scripted login brute force looks like this "
              "(CyberStrikeAI's FortiGate runs retried every 1.5 seconds); so does a health check or a monitoring "
-             "probe. On its own this is a lead; it is flagged when another behaviour of the same source backs it.", "",
+             "probe. On its own this is a lead; it is flagged when another behaviour of the same source backs it. "
+             f"{_regular_note(st)}", "",
              "| Source | Status | Built from | Runs |", "|---|---|---|---|"]
     for v in steady:
         more = f"; and {v['runs_total'] - len(v['runs']):,} more" if v["runs_total"] > len(v["runs"]) else ""
         lines.append(f"| {v['source']} | {_status(v)} | {_all([SOURCE_TEXT.get(x, x) for x in v['log_sources']])} | "
                      f"{'; '.join(_steady_run(r) for r in v['runs'])}{more} |")
     return lines + [""]
+
+
+def _baseline_line(st: dict) -> str:
+    b = st.get("baseline") or {}
+    if not b.get("check"):
+        return "- Regular clients: not checked (baseline.check is off)."
+    return (f"- Regular clients: a fixed-interval or high-rate lead whose every run goes to a service the source "
+            f"used {b['min_sessions']}+ times at least {b['before_hours']:g} hours before the end of its latest run there, in all the "
+            "data read (older than the lookback too).")
 
 
 def _outbound_line(st: dict) -> str:
@@ -454,6 +480,9 @@ def markdown(res: dict) -> str:
               "repetition or high-rate repeated connections.",
               "- **Lead** means worth a look, not flagged: one behaviour that ordinary traffic can also show. A "
               "published-address match is shown beside it but never turns a lead into a flag.",
+              "- **Regular client** is a lead from a source that already repeated to the same service well "
+              "before, as a health check or a daily integration does. It is listed last, not dropped. A sweep "
+              "or another behaviour still flags it.",
               "- **Named targets** are the kinds of service the ARTEX and CyberStrikeAI reporting says the agents "
               "went for (edge-device consoles and VPNs, AI model gateways, databases, remote access), by port. "
               "They are named so you can check those services first; they do not change whether a source is "
@@ -503,6 +532,7 @@ def markdown(res: dict) -> str:
               f"- High-rate repeated connections (a lead on its own): {st['spray']['min_per_minute']}+ sessions a minute to one TCP service in "
               f"{st['spray']['min_minutes']}+ minutes, {st['spray']['min_answered_share']:.0%}+ completed; services "
               f"more than {st['spray']['max_service_sources']} outside addresses used never count.",
+              _baseline_line(st),
               f"- Several attack paths at once: {st['parallel']['min_bursts']}+ bursts after narrowing, each working "
               f"{st['parallel']['min_services']}+ services and going back to one it left.",
               f"- Rotating sources: {st['rotation']['min_joiners']}+ new addresses whose first session is between "

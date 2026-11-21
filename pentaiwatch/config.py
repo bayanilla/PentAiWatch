@@ -144,6 +144,22 @@ class Rotation:
 
 
 @dataclass
+class Baseline:
+    """Regular clients: a fixed-interval or high-rate lead from a source that already repeated to the
+    same service well before, such as a health check or a partner integration that runs every day.
+    Such a lead is marked as a regular client and listed last. It is still listed, never dropped, and
+    a lead that another behaviour backs is flagged whatever its history: a sweep first is not what a
+    regular client does. A service is a regular one for a source when the source had ``min_sessions``
+    or more sessions to it at least ``before_hours`` before the end of its latest run there, anywhere
+    in the data read (sessions older than the lookback count here too): it has been a client of
+    that service for half a day or more, as a health check that runs for days or a job that runs
+    every day has."""
+    check: bool = True
+    before_hours: float = 12
+    min_sessions: int = 30
+
+
+@dataclass
 class Outbound:
     """Your hosts reaching out to attacker infrastructure. Inbound traffic shows the attack;
     outbound shows whether it worked. An internal host with a session to an address on a list of
@@ -256,6 +272,7 @@ class Config:
     spray: Spray = field(default_factory=Spray)
     parallel: Parallel = field(default_factory=Parallel)
     rotation: Rotation = field(default_factory=Rotation)
+    baseline: Baseline = field(default_factory=Baseline)
     outbound: Outbound = field(default_factory=Outbound)
     # Named kinds of target: name -> ports. Your names are added; giving a default name replaces its
     # ports, and an empty list drops it.
@@ -399,6 +416,8 @@ def check(cfg: Config, name: str = "settings") -> None:
         raise UserError(f"{name}: spray.min_per_minute, spray.min_minutes and spray.max_service_sources must be 1 or more")
     if cfg.rotation.quiet_before_hours < 0:
         raise UserError(f"{name}: rotation.quiet_before_hours cannot be less than 0")
+    if cfg.baseline.before_hours < 0 or cfg.baseline.min_sessions < 1:
+        raise UserError(f"{name}: baseline.before_hours cannot be less than 0, and baseline.min_sessions must be 1 or more")
     if cfg.rotation.min_joiners < 1 or cfg.rotation.max_service_sources < 1:
         raise UserError(f"{name}: rotation.min_joiners and rotation.max_service_sources must be 1 or more")
     if cfg.window_hours > cfg.lookback_hours:

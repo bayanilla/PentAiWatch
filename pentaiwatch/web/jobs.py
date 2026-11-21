@@ -65,12 +65,14 @@ def summary(res: dict) -> dict:
                        + [{"source": v["source"], "level": None, "label": f"{v['runs'][0]['sessions']:,} sessions "
                            f"to {v['runs'][0]['service']}, one every {v['runs'][0]['gap_seconds']:g} s",
                            "hosts": len({r["service"].split(":")[0].split("/")[0] for r in v["runs"]}),
-                           "timeline": False, "tag": "Fixed-interval", "lead": v.get("status") != "flagged"}
+                           "timeline": False, "tag": "Fixed-interval", "lead": v.get("status") != "flagged",
+                           "regular": v.get("status") == "regular"}
                           for v in res["detection"].get("steady_sources") or []]
                        + [{"source": v["source"], "level": None, "label": f"{v['runs'][0]['sessions']:,} sessions "
                            f"to {v['runs'][0]['service']}, up to {v['runs'][0]['peak_per_minute']:,} a minute",
                            "hosts": len({r["service"].split(":")[0] for r in v["runs"]}),
-                           "timeline": False, "tag": "Repeated connections", "lead": v.get("status") != "flagged"}
+                           "timeline": False, "tag": "Repeated connections", "lead": v.get("status") != "flagged",
+                           "regular": v.get("status") == "regular"}
                           for v in res["detection"].get("spray_sources") or []]
                        + _rotation_entries(res)
                        + [{"source": c["host"], "level": None, "label": f"reached {c['destination']} "

@@ -212,6 +212,19 @@ time the session has, so it works from Zeek or from any Palo Alto export. A serv
 `spray.max_service_sources` (20) outside addresses used is public and left out, because a busy
 client of it, or many people behind one NAT address, is expected there.
 
+### Regular clients
+
+A health check or a partner integration that runs every day is a fixed-interval or high-rate lead
+every day. When every run of such a lead goes to a service the same source already used
+`baseline.min_sessions` (30) or more times at least `baseline.before_hours` (12) before the end of
+its latest run there (it has been a client of that service for half a day or more, as a health
+check that runs for days or a job that runs every day has), it is marked as a **regular client** and listed last. It is never dropped, and a sweep or
+another behaviour of the same source still flags it: a regular client does not sweep. The earlier
+sessions can be anywhere in the data read, older than the lookback too, so give PentAIWatch a day
+or more of earlier logs to learn from. A patient attacker who repeats the same thing day after day
+from the same address would also be marked regular, which is why it stays listed.
+`baseline.check: false` turns this off.
+
 ### Several attack paths at once
 
 ARTEX ran several attack paths side by side from one address. Once a flagged source has narrowed,
@@ -335,6 +348,11 @@ first is used, a warning names the others, and `--config` settles it.
     "min_joiners": 2,
     "max_service_sources": 20,
     "quiet_before_hours": 2
+  },
+  "baseline": {
+    "check": true,
+    "before_hours": 12,
+    "min_sessions": 30
   },
   "outbound": {
     "check": true,

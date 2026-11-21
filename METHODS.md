@@ -225,8 +225,22 @@ own, and **flagged** only when evidence from other sessions of the same source b
 The same stream measured twice does not count: a fast health check is both fixed-interval and high
 rate on one service. A joiner's own repetition is what made it a joiner, so it never backs its
 rotation. A published-address match is shown beside a lead and never backs it. results.json gives
-`status` ("flagged" or "lead") and `backed_by` on each entry of `steady_sources`, `spray_sources`
-and `rotations`.
+`status` ("flagged", "lead" or "regular") and `backed_by` on each entry of `steady_sources`,
+`spray_sources` and `rotations`.
+
+### Regular clients
+
+A fixed-interval or high-rate lead is marked **regular** when every one of its runs goes to a
+service the same source used `baseline.min_sessions` (30) or more times at least
+`baseline.before_hours` (12) before the end of its latest run to that service, counted over all the
+data read: the source has been a client of that service for half a day or more. Every run to such a
+service is regular, yesterday's as well as today's. A stream that has itself run for 12 hours counts
+too, so a fixed-interval or high-rate stream that keeps going from one address for that long, with
+no sweep, is listed as regular: still listed, last. Each such run
+carries `regular_since`, the source's first session to that service. Only leads are marked: a
+flagged behaviour is never softened by its history. Regular clients are listed after the leads and
+counted apart from them. A rotation is never marked regular: its joiners were quiet before the sweep
+by definition.
 
 ## What the Explorer draws
 

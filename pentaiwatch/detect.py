@@ -179,6 +179,7 @@ class SteadyRun:
     first: str
     last: str
     target: str = ""             # the kind of target the service is, '' when none
+    regular_since: str = ""      # first session to this service, when the source repeated to it well before
 
 
 @dataclass
@@ -235,6 +236,7 @@ class SprayRun:
     first: str                   # start of the first such minute
     last: str                    # end of the last such minute
     target: str = ""             # the kind of target the service is, '' when none
+    regular_since: str = ""      # first session to this service, when the source repeated to it well before
 
 
 @dataclass
@@ -245,7 +247,9 @@ class SpraySource:
     runs: list[SprayRun]         # most sessions first (capped)
     runs_total: int
     sessions: int                # all its inbound sessions in the lookback
-    status: str = "lead"         # "flagged" when another behaviour of the source backs it, else "lead"
+    # "flagged" when another behaviour of the source backs it; "regular" when it is not backed and
+    # every run is to a service the source already repeated to well before; else "lead"
+    status: str = "lead"
     backed_by: list[str] = field(default_factory=list)   # those behaviours (BEHAVIOUR_*)
 
 
@@ -292,7 +296,9 @@ class SteadySource:
     runs: list[SteadyRun]        # longest first (capped)
     runs_total: int
     sessions: int                # all its inbound sessions in the lookback
-    status: str = "lead"         # "flagged" when another behaviour of the source backs it, else "lead"
+    # "flagged" when another behaviour of the source backs it; "regular" when it is not backed and
+    # every run is to a service the source already repeated to well before; else "lead"
+    status: str = "lead"
     backed_by: list[str] = field(default_factory=list)   # those behaviours (BEHAVIOUR_*)
 
 
@@ -427,6 +433,10 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
             for src, runs in sorted(spray.items(), key=lambda kv: (-kv[1][0].sessions, kv[0]))
             if src not in steady_only]
         _backing(con, out, spray_any)
+        if cfg.baseline.check:
+            _regular(con, cfg, out)
+            out.steady_sources.sort(key=lambda v: v.status == "regular")
+            out.spray_sources.sort(key=lambda v: v.status == "regular")
         listed_but_allowed = sorted(ip for ip in bad if ip in _allowed(con))
         if listed_but_allowed:
             out.warnings.append(f"{len(listed_but_allowed)} source(s) on a list of published attacker addresses are "
@@ -1285,6 +1295,39 @@ def _backing(con, out: Detection, spray_any: dict[str, list[SprayRun]] | None = 
                        + ([f"the sweeping address shows {BEHAVIOUR_STEADY}"] if g.sweeper in steady else [])
                        + ([f"the sweeping address shows {BEHAVIOUR_SPRAY}"] if g.sweeper in spray else []))
         g.status = "flagged" if g.backed_by else "lead"
+
+
+def _regular(con, cfg: Config, out: Detection) -> None:
+    """Mark leads from regular clients (see config.Baseline). Only leads: a flagged behaviour stays
+    flagged. For each service a lead's runs go to, the source's sessions to it at least
+    ``baseline.before_hours`` before the END of its latest run there are counted, in all of
+    ``flows``; with ``baseline.min_sessions`` or more, every run to that service is regular: the
+    source has been a client of it for that long. A health check that has run for days and a job
+    that runs every day both are; yesterday's run is as regular as today's."""
+    b = cfg.baseline
+    items: list[SteadySource | SpraySource] = [*out.steady_sources, *out.spray_sources]
+    for item in items:
+        if item.status != "lead":
+            continue
+        latest: dict[str, str] = {}
+        for run in item.runs:
+            latest[run.service] = max(latest.get(run.service, run.last), run.last)
+        since: dict[str, str] = {}
+        for service, last in latest.items():
+            n, earliest = con.execute("""
+                SELECT count(*), min(ts) FROM flows
+                WHERE src_ip = $src AND ts IS NOT NULL AND ts <= $cut
+                  AND CASE WHEN dst_port IS NULL THEN dst_ip || '/' || proto
+                           ELSE dst_ip || ':' || CAST(dst_port AS VARCHAR) || '/' || proto END = $service""",
+                                      {"src": item.source, "service": service,
+                                       "cut": datetime.fromisoformat(last.rstrip("Z"))
+                                       - timedelta(hours=b.before_hours)}).fetchone()
+            if n >= b.min_sessions:
+                since[service] = _iso(earliest)
+        for run in item.runs:
+            run.regular_since = since.get(run.service, "")
+        if item.runs and item.runs_total <= len(item.runs) and all(r.regular_since for r in item.runs):
+            item.status = "regular"
 
 
 def _has_table(con, name: str) -> bool:
