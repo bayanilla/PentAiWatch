@@ -104,6 +104,16 @@ def _names(ports: dict[int, str], services) -> list[str]:
 
 
 @dataclass
+class Nonstop:
+    """A source's longest stretch of activity with no long break (config.Nonstop)."""
+    hours: float                 # from the stretch's first session to its last
+    first: str
+    last: str
+    sessions: int                # its sessions in the stretch
+    longest_gap_minutes: float   # the longest gap between two of them
+
+
+@dataclass
 class Service:
     """A service the source narrowed onto."""
     host: str
@@ -168,6 +178,7 @@ class Finding:
     parallel: ParallelPaths | None = None   # several attack paths at once, if seen: higher confidence
     confidence: str = "standard"            # "higher" when several attack paths at once were seen
     rotation: Rotation | None = None        # new addresses that came back to what its sweep found
+    nonstop: Nonstop | None = None          # active for most of a day or longer with no long break
 
 
 @dataclass
@@ -296,6 +307,7 @@ class LoginSource:
     status: str = "lead"         # "flagged", "regular" or "lead", as for the other standalone behaviours
     backed_by: list[str] = field(default_factory=list)
     authorization: str = ""
+    nonstop: Nonstop | None = None   # active for most of a day or longer with no long break
 
 
 @dataclass
@@ -311,6 +323,7 @@ class SpraySource:
     status: str = "lead"
     backed_by: list[str] = field(default_factory=list)   # those behaviours (BEHAVIOUR_*)
     authorization: str = ""      # why a known_scanners.csv authorization for it did not cover it, if one did not
+    nonstop: Nonstop | None = None   # active for most of a day or longer with no long break
 
 
 @dataclass
@@ -405,6 +418,7 @@ class SteadySource:
     status: str = "lead"
     backed_by: list[str] = field(default_factory=list)   # those behaviours (BEHAVIOUR_*)
     authorization: str = ""      # why a known_scanners.csv authorization for it did not cover it, if one did not
+    nonstop: Nonstop | None = None   # active for most of a day or longer with no long break
 
 
 @dataclass
@@ -425,6 +439,7 @@ class KnownSource:
     last_seen: str
     targets: list[str] = field(default_factory=list)  # kinds of target among all the services it reached
     authorization: str = ""      # why a known_scanners.csv authorization for it did not cover it, if one did not
+    nonstop: Nonstop | None = None   # active for most of a day or longer with no long break
 
 
 @dataclass
@@ -593,6 +608,8 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
             out.steady_sources.sort(key=lambda v: v.status == "regular")
             out.spray_sources.sort(key=lambda v: v.status == "regular")
             out.login_sources.sort(key=lambda v: v.status == "regular")
+        if cfg.nonstop.check:
+            _nonstop(con, cfg, out)
         _authorize(con, cfg, out)
         _callback_status(out)
         _beacon_backing(cfg, out, beacons, bad)
@@ -1751,6 +1768,39 @@ def _backing(con, out: Detection, spray_any: dict[str, list[SprayRun]] | None = 
         g.status = "flagged" if g.backed_by else "lead"
 
 
+def _nonstop(con, cfg: Config, out: Detection) -> None:
+    """Set ``nonstop`` on the findings, the published-address matches and the leads whose source
+    stayed active for ``nonstop.min_hours`` or more with no gap between two sessions longer than
+    ``nonstop.max_quiet_hours``: its longest such stretch in the lookback. Extra evidence only: it
+    changes no status."""
+    items: list = [*out.findings, *out.known_sources, *out.steady_sources, *out.spray_sources, *out.login_sources]
+    if not items:
+        return
+    n = cfg.nonstop
+    rows = con.execute("""
+        WITH t AS (
+            SELECT src_ip, start_ts, epoch(start_ts) - epoch(lag(start_ts) OVER w) AS gap, row_number() OVER w AS pos
+            FROM pw_sessions WHERE list_contains($sources, src_ip)
+            WINDOW w AS (PARTITION BY src_ip ORDER BY start_ts, seq)),
+        r AS (
+            SELECT *, sum(CASE WHEN gap IS NULL OR gap > $quiet THEN 1 ELSE 0 END) OVER (
+                PARTITION BY src_ip ORDER BY pos ROWS UNBOUNDED PRECEDING) AS stretch
+            FROM t)
+        SELECT src_ip, min(start_ts) AS first_ts, max(start_ts) AS last_ts, count(*) AS n,
+               max(gap) FILTER (gap <= $quiet) AS longest
+        FROM r GROUP BY src_ip, stretch
+        HAVING epoch(max(start_ts)) - epoch(min(start_ts)) >= $span
+        QUALIFY row_number() OVER (PARTITION BY src_ip
+                                   ORDER BY epoch(max(start_ts)) - epoch(min(start_ts)) DESC, min(start_ts)) = 1""",
+                       {"sources": sorted({i.source for i in items}), "quiet": float(n.max_quiet_hours) * 3600,
+                        "span": float(n.min_hours) * 3600}).fetchall()
+    found = {src: Nonstop(hours=round((last - first).total_seconds() / 3600, 1), first=_iso(first), last=_iso(last),
+                          sessions=int(count), longest_gap_minutes=round((longest or 0) / 60, 1))
+             for src, first, last, count, longest in rows}
+    for item in items:
+        item.nonstop = found.get(item.source)
+
+
 def _authorize(con, cfg: Config, out: Detection) -> None:
     """Move the findings, published-address matches and leads that a known_scanners.csv authorization
     covers into ``out.authorized``; note on the others why it did not. Covered: every one of the
@@ -1902,6 +1952,13 @@ def _coverage(con, cfg: Config, out: Detection) -> list[Coverage]:
     rows.append(Coverage("Published attacker addresses (context, not behaviour)", "checked",
                          f"{len(cfg.known_bad):,} listed addresses or ranges"
                          + (", the bundled list included" if cfg.known_bad_bundled else ", the bundled list off")))
+    scored_h = (con.execute("SELECT epoch(max(start_ts)) - epoch(min(start_ts)) FROM pw_sessions").fetchone()[0] or 0) / 3600
+    if not cfg.nonstop.check:
+        rows.append(Coverage("No overnight break", "not checked", "nonstop.check is off"))
+    else:
+        rows.append(Coverage("No overnight break", "checked" if scored_h >= cfg.nonstop.min_hours else "not checked",
+                             f"the scored sessions cover {scored_h:,.1f} hours; {cfg.nonstop.min_hours:g} or more are "
+                             "needed to see a source stay active that long"))
     rows.append(Coverage("Fixed-interval calls out", "checked" if cfg.beacon.check else "not checked",
                          "internal hosts' sessions out with a logged start time" if cfg.beacon.check
                          else "beacon.check is off"))
