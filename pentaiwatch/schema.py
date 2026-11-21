@@ -77,6 +77,22 @@ class ZeekEvent:
     source: str = ""
 
 
+@dataclass(slots=True)
+class WebHit:
+    """One Zeek http, dns or ssl record that matched a list in the ``web`` settings: an agentic
+    tool's user agent (kind "agent", http only), or a watched name such as an AI model API (kind
+    "name": the http Host, the dns query or the ssl server name). Only matching records are kept."""
+    ts: datetime | None
+    kind: str                    # "agent" | "name"
+    label: str                   # the tool, or the kind of name, as the settings call it
+    stream: str                  # http | dns | ssl
+    src_ip: str
+    dst_ip: str
+    dst_port: int | None
+    text: str                    # the user agent, or the name
+    source: str = ""
+
+
 @dataclass
 class ParseStats:
     """Data-quality bookkeeping for one input file."""
@@ -86,6 +102,7 @@ class ParseStats:
     kept: int = 0
     dropped: Counter = field(default_factory=Counter)
     notes: list[str] = field(default_factory=list)
+    web_rows: Counter = field(default_factory=Counter)   # Zeek http/dns/ssl records checked, by stream
 
     def drop(self, reason: str):
         self.dropped[reason] += 1

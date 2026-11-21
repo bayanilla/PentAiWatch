@@ -68,7 +68,8 @@ def main(argv=None) -> int:
     flagged = lambda items: [x for x in items if x.get("status") == "flagged"]
     shared = res["detection"].get("shared_sweeps") or []
     logins = res["detection"].get("login_sources") or []
-    total = len({x["source"] for x in found + known + flagged(steady) + flagged(spray) + flagged(logins)}
+    tools = [t for t in res["detection"].get("tool_clients") or [] if not t["internal"]]
+    total = len({x["source"] for x in found + known + tools + flagged(steady) + flagged(spray) + flagged(logins)}
                 | {ip for g in flagged(rotations) for ip in [g["sweeper"]] + [j["source"] for j in g["joiners"]]}
                 | {ip for g in flagged(shared) for r in g["returns"] for ip in r["sources"]})
     regular = {x["source"] for x in steady + spray + logins if x.get("status") == "regular"}
@@ -124,6 +125,12 @@ def main(argv=None) -> int:
     for b in res["detection"].get("beacons") or []:
         print(f"  {b['host']}  fixed-interval calls out ({b['status']}): {b['sessions']} sessions to {b['service']}, "
               f"one every {b['gap_seconds']:g} s")
+    for t in res["detection"].get("tool_clients") or []:
+        print(f"  {t['source']}  agentic tool user agent ({', '.join(t['tools'])}): {t['requests']} requests"
+              + ("  [internal host]" if t["internal"] else ""))
+    asked = res["detection"].get("name_contacts_total") or 0
+    if asked:
+        print(f"  {asked} internal host and watched-name pair(s), such as AI model APIs (hints, see the report)")
     calls = res["detection"].get("callbacks_total") or 0
     if calls:
         print(f"  {calls} outbound session group(s) back to a source on an agentic tool's port (hints, see the report)")

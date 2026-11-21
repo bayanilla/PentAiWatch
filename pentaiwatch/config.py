@@ -254,6 +254,40 @@ class Nonstop:
     max_quiet_hours: float = 2           # ... in which no gap between two sessions is longer than this
 
 
+@dataclass
+class Web:
+    """What Zeek's http.log, dns.log and ssl.log add, when they are given with conn.log. Connection
+    logs carry no user agent and no name, so two things the reporting describes cannot be seen
+    without them:
+
+    * ``user_agents``: the frameworks name themselves in the User-Agent header of their requests
+      (http.log). A request whose user agent CONTAINS one of these texts, ignoring case, is a match.
+      An outside source that sent one is named on sight, like a published address: context, kept
+      apart from the behaviour, and never backing a lead. An internal host that sent one is named
+      too: the tool is running inside. A user agent is whatever the sender writes, so a match can
+      be faked and a miss proves nothing; plain HTTP only, since http.log does not see inside TLS.
+      Left out on purpose: norma/0.4, which ARTEX sends but other tools share.
+    * ``names``: an internal host that looked up or connected to one of these names (the dns.log
+      query, the http.log Host, the ssl.log server name; a listed name or anything under it). A
+      hint only, never a flag: an AI model API is ordinary traffic from a developer's machine and
+      worth a look from a server. In dns.log the asker is often your resolver, not the host itself.
+
+    Only matching records are kept; everything else in those logs is counted and set aside."""
+    check: bool = True
+    user_agents: dict[str, list[str]] = field(
+        default_factory=lambda: {
+            "ARTEX": ["artex", "spa-api-recon"],
+            "CyberStrikeAI": ["CyberStrikeAI", "cyberstrike-ai/"],
+            "HexStrike AI": ["HexStrike"],
+        }, metadata={"kind": "lists"})
+    names: dict[str, list[str]] = field(
+        default_factory=lambda: {
+            "AI model API": ["api.anthropic.com", "api.deepseek.com", "open.bigmodel.cn", "api.x.ai"],
+            "AI model reseller named in ARTEX reporting": ["xcai.pro"],
+            "Request-capture or callback service": ["webhook.site", "dnslog.cn"],
+        }, metadata={"kind": "lists"})
+
+
 # Kinds of service the ARTEX and CyberStrikeAI reporting names as what the agents went for, by TCP or
 # UDP port. A flagged source's services on these ports are named in the report; they do not change
 # whether it is flagged. Port 443 is left out: too much else answers on it to name anything.
@@ -359,6 +393,7 @@ class Config:
     outbound: Outbound = field(default_factory=Outbound)
     beacon: Beacon = field(default_factory=Beacon)
     nonstop: Nonstop = field(default_factory=Nonstop)
+    web: Web = field(default_factory=Web)
     # Named kinds of target: name -> ports. Your names are added; giving a default name replaces its
     # ports, and an empty list drops it.
     targets: dict[str, list[int]] = field(
@@ -433,6 +468,18 @@ def _apply_map(current: dict, value, kind: str, name: str, where: str) -> None:
     (null: this log does not have the field)."""
     if not isinstance(value, dict):
         raise UserError(f"{name}: '{where}' must be an object")
+    if kind == "lists":                      # name -> texts; a name given replaces its texts, [] drops it
+        for key, item in value.items():
+            if not isinstance(item, list) or not all(isinstance(v, str) and v.strip() for v in item):
+                raise UserError(f"{name}: '{where}.{key}' must be a list of text values, none of them empty")
+            label = key.strip()
+            if not label:
+                raise UserError(f"{name}: '{where}' has an entry with no name")
+            current.pop(key, None)
+            current.pop(label, None)
+            if item:
+                current[label] = [v.strip() for v in item]
+        return
     if kind == "targets":
         for key, item in value.items():
             if not isinstance(item, list) or not all(isinstance(v, int) and not isinstance(v, bool) for v in item):
@@ -505,6 +552,15 @@ def check(cfg: Config, name: str = "settings") -> None:
     if cfg.beacon.min_sessions < 3:
         raise UserError(f"{name}: beacon.min_sessions must be 3 or more: two sessions have one gap, which is "
                         "always even")
+    for tool, patterns in cfg.web.user_agents.items():
+        for pattern in patterns:
+            if len(pattern.strip()) < 4:
+                raise UserError(f"{name}: web.user_agents.{tool}: '{pattern}' is too short to tell a tool by; "
+                                "give 4 characters or more")
+    for label, names in cfg.web.names.items():
+        for item in names:
+            if "." not in item.strip(". ") or " " in item.strip() or "/" in item:
+                raise UserError(f"{name}: web.names.{label}: '{item}' is not a host name such as api.example.com")
     if cfg.nonstop.max_quiet_hours >= cfg.nonstop.min_hours:
         raise UserError(f"{name}: nonstop.max_quiet_hours must be less than nonstop.min_hours")
     if cfg.parallel.min_services < 2 or cfg.parallel.min_bursts < 1:

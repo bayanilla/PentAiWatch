@@ -153,3 +153,40 @@ def write_paloalto_syslog(path: str, sessions: list[dict], denied=("S0",)) -> st
                 "any", 0, 7000000 + i, "0x0", "United States", "10.0.0.0-10.255.255.255", 0, 1, pkts,
                 "policy-deny" if stopped else "tcp-fin"])
     return path
+
+
+def write_zeek_log(path: str, stream: str, fields: list[str], types: list[str], rows: list[list]) -> str:
+    """Any Zeek log in TSV form: ``stream`` is its #path (http, dns, ssl), each row in ``fields`` order."""
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(f"#separator \\x09\n#set_separator\t,\n#empty_field\t(empty)\n#unset_field\t-\n#path\t{stream}\n")
+        fh.write("#fields\t" + "\t".join(fields) + "\n#types\t" + "\t".join(types) + "\n")
+        for row in rows:
+            fh.write("\t".join("-" if v is None else str(v) for v in row) + "\n")
+    return path
+
+
+# The columns of the http, dns and ssl logs in VulnScope MAX's samples (Zeek's own names).
+HTTP_FIELDS = ["ts", "uid", "id.orig_h", "id.orig_p", "id.resp_h", "id.resp_p", "method", "host", "uri",
+               "user_agent", "status_code", "response_body_len"]
+HTTP_TYPES = ["time", "string", "addr", "port", "addr", "port", "string", "string", "string", "string", "count", "count"]
+DNS_FIELDS = ["ts", "uid", "id.orig_h", "id.orig_p", "id.resp_h", "id.resp_p", "proto", "query", "qtype_name",
+              "rcode_name", "answers"]
+DNS_TYPES = ["time", "string", "addr", "port", "addr", "port", "enum", "string", "string", "string", "vector[string]"]
+SSL_FIELDS = ["ts", "uid", "id.orig_h", "id.orig_p", "id.resp_h", "id.resp_p", "version", "server_name", "established"]
+SSL_TYPES = ["time", "string", "addr", "port", "addr", "port", "string", "string", "bool"]
+
+
+def http_row(ts: float, src: str, dst: str, user_agent: str, host: str = "portal.example", uri: str = "/",
+             port: int = 80) -> list:
+    return [f"{ts:.6f}", f"H{int(ts * 1000) % 10 ** 9:09d}", src, 40000 + int(ts) % 20000, dst, port, "GET", host, uri,
+            user_agent, 200, 512]
+
+
+def dns_row(ts: float, src: str, query: str, resolver: str = "10.10.0.53") -> list:
+    return [f"{ts:.6f}", f"D{int(ts * 1000) % 10 ** 9:09d}", src, 50000 + int(ts) % 10000, resolver, 53, "udp", query,
+            "A", "NOERROR", "198.51.100.9"]
+
+
+def ssl_row(ts: float, src: str, dst: str, server_name: str) -> list:
+    return [f"{ts:.6f}", f"S{int(ts * 1000) % 10 ** 9:09d}", src, 45000 + int(ts) % 10000, dst, 443, "TLSv13",
+            server_name, "T"]

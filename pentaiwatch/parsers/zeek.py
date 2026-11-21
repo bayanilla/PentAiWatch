@@ -6,7 +6,7 @@ import os
 import re
 
 from ..errors import MissingField
-from ..schema import START_NONE, START_ZEEK_TS, Flow, ParseStats, ThreatEvent, ZeekEvent
+from ..schema import START_NONE, START_ZEEK_TS, Flow, ParseStats, ThreatEvent, WebHit, ZeekEvent
 from ._util import clean_ip, clean_port, clean_ports, clean_proto, count, open_text, parse_ts, text, to_int
 
 ESTABLISHED_STATES = {"SF", "S1", "S2", "S3", "RSTO", "RSTR"}
@@ -114,6 +114,47 @@ def _event(rec: dict, stream: str) -> ZeekEvent:
                      dst_ip=clean_ip(rec.get("id.resp_h") or rec.get("dst")), fields=rec)
 
 
+# The streams checked against the ``web`` settings, and the field of each that holds a name.
+WEB_NAME_FIELD = {"http": "host", "dns": "query", "ssl": "server_name"}
+MAX_WEB_TEXT = 300               # a user agent or a name is cut to this many characters
+
+
+def web_matcher(web):
+    """(user-agent patterns, names) from the ``web`` settings, lower-cased once per file:
+    [(pattern, tool)] and [(name, kind of name)]."""
+    agents = [(p.lower(), tool) for tool, pats in web.user_agents.items() for p in pats if p.strip()]
+    names = [(n.lower().strip("."), label) for label, items in web.names.items() for n in items if n.strip(".")]
+    return agents, names
+
+
+def _web_hits(rec: dict, stream: str, matcher, stats: ParseStats):
+    """The WebHits of one http, dns or ssl record: at most one per kind. A user agent matches when it
+    contains a pattern, ignoring case. A name matches when it is a listed name or ends with "." and
+    a listed name (api.x.ai matches api.x.ai, not max.ai)."""
+    stats.web_rows[stream] += 1
+    agents, names = matcher
+    src, dst = clean_ip(rec.get("id.orig_h")), clean_ip(rec.get("id.resp_h"))
+    if not src or not dst:
+        return
+    ts, port = None, None
+    if stream == "http" and agents:
+        ua = text(rec.get("user_agent"))
+        low = ua.lower()
+        tool = next((tool for pat, tool in agents if pat in low), None) if low else None
+        if tool:
+            ts, port = parse_ts(rec.get("ts")), clean_port(rec.get("id.resp_p"))
+            yield WebHit(ts=ts, kind="agent", label=tool, stream=stream, src_ip=src, dst_ip=dst, dst_port=port,
+                         text=ua[:MAX_WEB_TEXT])
+    name = text(rec.get(WEB_NAME_FIELD[stream])).lower().strip(".")
+    if stream == "http":
+        name = name.rsplit(":", 1)[0] if name.count(":") == 1 else name     # Host: name:port
+    label = next((label for n, label in names if name == n or name.endswith("." + n)), None) if name else None
+    if label:
+        yield WebHit(ts=ts or parse_ts(rec.get("ts")), kind="name", label=label, stream=stream, src_ip=src,
+                     dst_ip=dst, dst_port=port if port is not None else clean_port(rec.get("id.resp_p")),
+                     text=name[:MAX_WEB_TEXT])
+
+
 def _decode_separator(value: str) -> str:
     try:
         return value.encode("utf-8").decode("unicode_escape")
@@ -183,9 +224,12 @@ def _json_array(fh, chunk: int = 1 << 20):
             buf, pos = buf[pos:], 0
 
 
-def parse(path: str, stats: ParseStats):
-    """Yield Flow, ThreatEvent and ZeekEvent records one at a time."""
+def parse(path: str, stats: ParseStats, web=None):
+    """Yield Flow, ThreatEvent, WebHit and ZeekEvent records one at a time. ``web``: the ``web``
+    settings; when given, http, dns and ssl records are checked against them and only the matches
+    are yielded (as WebHits)."""
     sep, fields, types, stream = "\t", None, None, stream_from_name(path)
+    matcher = web_matcher(web) if web is not None else None
     set_sep, empty, unset = ",", "(empty)", "-"
     generic_streams: set[str] = set()
     with open_text(path) as fh:
@@ -248,6 +292,9 @@ def parse(path: str, stats: ParseStats):
             if row_stream in BOOKKEEPING_STREAMS:
                 stats.drop("Zeek bookkeeping log, not network activity")
                 continue
+            if matcher is not None and row_stream in WEB_NAME_FIELD:
+                yield from _web_hits(rec, row_stream, matcher, stats)
+                continue
             if row_stream == "conn":
                 item = _to_flow(rec, stats)
             elif row_stream == "notice":
@@ -259,6 +306,10 @@ def parse(path: str, stats: ParseStats):
                 generic_streams.add(row_stream)
             if item is not None:
                 yield item
+    if stats.web_rows:
+        stats.note("checked for agentic tools' user agents and watched names (the web settings), "
+                   "and only matching records kept: "
+                   + ", ".join(f"{n:,} {name} records" for name, n in sorted(stats.web_rows.items())))
     if generic_streams:
         stats.note("only conn sessions are used; other Zeek streams ("
                    + ", ".join(sorted(generic_streams)[:6]) + ") are read and set aside")

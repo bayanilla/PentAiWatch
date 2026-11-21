@@ -165,6 +165,58 @@ def _known_lines(known: list[dict]) -> list[str]:
     return lines + [""]
 
 
+def _tool_lines(clients: list[dict]) -> list[str]:
+    """The addresses whose HTTP requests carried an agentic tool's user agent."""
+    if not clients:
+        return []
+    also = {"finding": "a finding above", "lead": "a lead above"}
+    lines = ["## Context: agentic tools' user agents", "",
+             f"{_n(len(clients), 'address')} sent HTTP requests whose User-Agent names an agentic pentest framework "
+             "(Zeek http.log). The frameworks put their own name there by default. This is context, kept apart "
+             "from the behaviour above, like a published address: it is named on sight and never turns a lead "
+             "into a flag. A user agent is whatever the sender writes, so it can be faked, and one that is "
+             "changed or sent inside TLS is not seen. An internal host on this list is running the tool itself.", "",
+             "| Address | Tool | User agents | Requests | Sent to | Seen | Also |", "|---|---|---|---|---|---|---|"]
+    for t in clients:
+        where = f"{t['source']} (internal host{', ' + _cell(t['network']) if t.get('network') else ''})" \
+            if t["internal"] else t["source"]
+        more = f" and {t['hosts_total'] - len(t['hosts']):,} more" if t["hosts_total"] > len(t["hosts"]) else ""
+        lines.append(f"| {where} | {_cell(', '.join(t['tools']))} | {'; '.join(_cell(u) for u in t['user_agents'])} | "
+                     f"{t['requests']:,} | {', '.join(t['hosts'])}{more} | {_when(t['first'])} to {_when(t['last'])} | "
+                     f"{also.get(t.get('also') or '', '')} |")
+    return lines + [""]
+
+
+def _name_lines(contacts: list[dict], total: int) -> list[str]:
+    """Internal hosts that looked up or connected to a watched name (hints)."""
+    if not contacts:
+        return []
+    lines = ["### Watched names your hosts asked for (hints, not flagged)", "",
+             f"{_n(len({c['host'] for c in contacts}), 'internal host')} looked up or connected to a name on the "
+             "watch list (Zeek dns, http and ssl logs): an AI model API, a reseller named in the reporting, or a "
+             "request-capture service an agent sends proof of access to. From a developer's machine an AI model "
+             "API is ordinary; from a server it is worth a look. This flags nothing. In dns.log the asker is "
+             "often your resolver, not the host that wanted the name.", "",
+             "| Internal host | Kind of name | Names | Records | Seen in | Seen |", "|---|---|---|---|---|---|"]
+    for c in contacts:
+        lines.append(f"| {_host(c)} | {_cell(c['kind'])} | {', '.join(_cell(n) for n in c['names'])} | {c['records']:,} | "
+                     f"{', '.join(c['seen_in'])} | {_when(c['first'])} to {_when(c['last'])} |")
+    if total > len(contacts):
+        lines.append(f"| and {total - len(contacts):,} more | | | | | |")
+    return lines + [""]
+
+
+def _web_line(st: dict) -> str:
+    w = st.get("web") or {}
+    if not w.get("check"):
+        return "- Zeek http, dns and ssl logs: not checked (web.check is off)."
+    agents = "; ".join(f"{tool} ({', '.join(pats)})" for tool, pats in w.get("user_agents", {}).items())
+    names = "; ".join(f"{label} ({', '.join(items)})" for label, items in w.get("names", {}).items())
+    return ("- Zeek http, dns and ssl logs, when given: a user agent containing one of these names its sender on "
+            f"sight (context): {agents or 'none'}. An internal host asking for one of these names, or a name "
+            f"under it, is a hint: {names or 'none'}.")
+
+
 def _coverage_lines(rows: list[dict]) -> list[str]:
     """What each detector could check on this data: a detector that could not run found nothing
     because it could not look, not because there was nothing."""
@@ -567,6 +619,8 @@ def _finding_lines(f: dict, st: dict, map_file: str = "", timeline: bool = False
         lines.append(f"| High-rate repeated connections | {'; '.join(_spray_run(r) for r in f['spray'])} |")
     if f.get("login"):
         lines.append(f"| Repeated failed-login pattern | {'; '.join(_login_run(r) for r in f['login'])} |")
+    if f.get("user_agents"):
+        lines.append(f"| Agentic tool user agent | {'; '.join(_cell(u) for u in f['user_agents'])} |")
     if f.get("nonstop"):
         lines.append(f"| No overnight break | {_nonstop_text(f['nonstop'])} |")
     if f.get("notes"):
@@ -656,6 +710,7 @@ def markdown(res: dict) -> str:
     lines += _spray_lines(det.get("spray_sources") or [], st)
     lines += _login_lines(det.get("login_sources") or [], st)
     lines += _beacon_lines(det.get("beacons") or [], det.get("beacons_total") or 0, st)
+    lines += _name_lines(det.get("name_contacts") or [], det.get("name_contacts_total") or 0)
     lines += _authorized_lines(det.get("authorized") or [])
     if map_file:
         replay = (" Its Timeline replays a source's sessions in the order they started, with its bursts and "
@@ -693,6 +748,11 @@ def markdown(res: dict) -> str:
               "- **Several attack paths at once** raises confidence in a Level 1 or Tier 0 finding: once it "
               "narrowed, the source's bursts worked more than one service, taking turns between them, as an "
               "agent running attack paths side by side does. It never flags a source on its own.",
+              "- **Agentic tool user agent.** With Zeek's http.log, an address whose requests carry a "
+              "framework's own name in the User-Agent header is named on sight, as context. It can be faked, and "
+              "it never turns a lead into a flag.",
+              "- **Watched names.** With Zeek's dns, http or ssl log, an internal host that asked for an AI model "
+              "API, a reseller or a request-capture service is named as a hint. It flags nothing.",
               "- **No overnight break** is extra evidence on a finding, a lead or a published address: the source "
               "stayed active for most of a day or longer with no break a person would take, as an agent that does "
               "not sleep does, and as a monitor does. It never flags a source and never turns a lead into a flag.",
@@ -719,6 +779,7 @@ def markdown(res: dict) -> str:
     lines += [f"- {text}" for text in res["limitations"]] + [""]
     lines += _coverage_lines(det.get("coverage") or [])
     lines += _known_lines(det.get("known_sources") or [])
+    lines += _tool_lines(det.get("tool_clients") or [])
     if res["warnings"]:
         lines += ["## Warnings", ""] + [f"- {w}" for w in res["warnings"]] + [""]
     lines += ["## Input files", "", "| File | Format | Records read | Kept | Notes |", "|---|---|---|---|---|"]
@@ -772,6 +833,7 @@ def markdown(res: dict) -> str:
               _outbound_line(st),
               _beacon_line(st),
               _nonstop_line(st),
+              _web_line(st),
               _targets_line(st),
               f"- Never flagged: {', '.join(st['allowlist'] + [k['cidr'] for k in res['known_scanners'] if not _is_auth(k)]) or 'nothing listed'}."
               + (f" That left out {_n(det['never_flagged_sources'], 'outside source')} with "

@@ -13,7 +13,7 @@ from multiprocessing import get_context
 from . import resources
 from .errors import MissingField, UserError
 from .parsers import FORMATS, detect
-from .schema import Flow, ParseStats, ThreatEvent
+from .schema import Flow, ParseStats, ThreatEvent, WebHit
 from .store import DEFAULT_BATCH, DEFAULT_SKEW_SECONDS, FlowView, PartWriter, Store
 
 
@@ -84,9 +84,13 @@ def _load(store, paths, overrides, skew_seconds, batch_size, options) -> Dataset
     threats: dict[tuple, ThreatEvent] = {}
     kinds: dict[tuple, str] = {}             # alert -> the kind of log it came from
     sensors: set[str] = set()
-    for stats, threat_list, n_flows, fatal in _parse_all(jobs, store.budget):
+    web: dict[tuple, list] = {}              # matching http/dns/ssl records, counted per hour
+    for stats, threat_list, n_flows, fatal, web_rows in _parse_all(jobs, store.budget):
         if fatal:
             raise RuntimeError(fatal)       # out of memory or disk in a worker: resources.explain words it
+        for key, (n, first, last) in web_rows.items():
+            have = web.get(key)
+            web[key] = [n, first, last] if have is None else [have[0] + n, min(have[1], first), max(have[2], last)]
         for t in threat_list:
             threats[t.key()] = t
             kinds[t.key()] = stats.fmt
@@ -101,6 +105,11 @@ def _load(store, paths, overrides, skew_seconds, batch_size, options) -> Dataset
     ds.flows = FlowView(store)
     ds.threats = sorted(threats.values(), key=lambda t: (t.ts is None, t.ts))
     store.save_threats((kinds[t.key()], t) for t in ds.threats)
+    checked: dict[str, int] = {}
+    for stats in ds.stats:
+        for stream, n in stats.web_rows.items():
+            checked[stream] = checked.get(stream, 0) + n
+    store.save_web(web, checked)
     return ds
 
 
@@ -159,13 +168,15 @@ def _parse_all(jobs: list, budget):
 def parse_file(job):
     """Parse one input file (in a worker process or the main one). Sessions are written to Parquet
     in the run's working directory; IPS/IDS alerts, which are few, are returned.
-    Returns (stats, alerts, sessions written, fatal error or None)."""
+    Matching http/dns/ssl records (WebHits) are counted per hour and returned too.
+    Returns (stats, alerts, sessions written, fatal error or None, web counts)."""
     fid, path, fmt, workdir, batch_size, options = job
     name = os.path.basename(path)
     parser = FORMATS[fmt]
     stats = ParseStats(file=name, fmt=fmt)
     writer = PartWriter(workdir, fid, batch_size)
     alerts = []
+    web: dict[tuple, list] = {}
     kept = 0
     try:
         try:
@@ -177,7 +188,14 @@ def parse_file(job):
                 elif isinstance(r, ThreatEvent):
                     alerts.append(r)
                     kept += 1
-                # other Zeek streams (dns, ssl, ...) are read and set aside: not used yet
+                elif isinstance(r, WebHit):
+                    if r.ts is not None:     # counted per hour, so the lookback can be applied later
+                        hour = r.ts.replace(minute=0, second=0, microsecond=0)
+                        key = (r.kind, r.label, r.stream, r.src_ip, r.dst_ip, r.dst_port, r.text, hour)
+                        have = web.get(key)
+                        web[key] = [1, r.ts, r.ts] if have is None else [have[0] + 1, min(have[1], r.ts), max(have[2], r.ts)]
+                        kept += 1
+                # other Zeek streams are read and set aside
         except MissingField as exc:      # a required field is missing: stop, naming the file
             raise MissingField(f"{name}: {exc}") from None
         except Exception as exc:  # a broken file should not sink the whole run
@@ -194,6 +212,6 @@ def parse_file(job):
         if resources.explain(exc, None) is None:
             raise
         writer.con = None
-        return stats, [], 0, str(exc) or repr(exc)
+        return stats, [], 0, str(exc) or repr(exc), {}
     stats.kept = kept
-    return stats, alerts, writer.n_flows, None
+    return stats, alerts, writer.n_flows, None, web
