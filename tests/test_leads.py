@@ -167,14 +167,24 @@ class Leads(unittest.TestCase):
         self.assertEqual(self.by_source(det["findings"])[sample.AGENT]["level"], 1)
         self.assertTrue(any("fixed-interval cadence cannot be checked" in w for w in res["warnings"]))
 
-    def test_a_monitor_and_a_client_near_a_plain_sweep_are_a_rotation_lead(self):
-        # from Zeek, the monitor and the sample's ordinary client both start within 15 minutes of the
-        # plain scanner's sweep and use only services it found: a rotation by the rule, but nothing backs it
-        res, md = self.analyze(sample.sessions() + health_check())
-        [g] = res["detection"]["rotations"]
-        self.assertEqual(g["sweeper"], sample.SCANNER)
-        self.assertEqual((g["status"], g["backed_by"]), ("lead", []))
-        self.assertIn(f"| {sample.SCANNER} | Lead |", md)
+    def test_a_monitor_and_a_client_near_a_plain_sweep_are_not_a_rotation(self):
+        # the monitor and the sample's ordinary client both start within 15 minutes of the plain
+        # scanner's sweep and use only services it found. That sweep begins when the data does, so
+        # whether they were new cannot be told, and nothing is tied to it
+        res, _ = self.analyze(sample.sessions() + health_check())
+        self.assertEqual(res["detection"]["rotations"], [])
+        self.assertEqual(res["detection"]["rotation_unchecked"], 1)
+
+    def test_the_same_later_in_the_data_is_a_rotation_lead(self):
+        # the same scanner sweep, monitor and client a day into the data, with both already seen in
+        # the hours before: neither is new, so neither joins
+        shift = 24 * 3600
+        before = (health_check(start=shift - 5000, n=200)
+                  + [kit.session(sample.T0 + shift - 4000, sample.CLIENT, "10.10.1.20", 443, "SF")])
+        later = [dict(s, ts=s["ts"] + shift) for s in sample.scanner(random.Random(3))[:1000]]
+        later += health_check(start=shift + 3000, n=300)
+        res, _ = self.analyze(sample.sessions() + before + later)
+        self.assertEqual(res["detection"]["rotations"], [])
 
     def test_a_rotation_whose_sweep_is_a_finding_is_flagged(self):
         from tests.test_rotation import PROXIES, proxy

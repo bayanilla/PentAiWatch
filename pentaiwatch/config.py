@@ -137,6 +137,10 @@ class Rotation:
     # A service more outside addresses than this used in the lookback is public (a web site, a mail
     # relay): new visitors to it are expected, so it never ties addresses together.
     max_service_sources: int = 20
+    # A joiner must have had no session at all in this many hours before the sweep began: an address
+    # that was already using the service is not new. A sweep that begins sooner than this after the
+    # start of the data cannot be checked, so it anchors a rotation only when it is a finding itself.
+    quiet_before_hours: float = 2
 
 
 @dataclass
@@ -393,6 +397,8 @@ def check(cfg: Config, name: str = "settings") -> None:
         raise UserError(f"{name}: parallel.min_services must be 2 or more, and parallel.min_bursts 1 or more")
     if min(cfg.spray.min_per_minute, cfg.spray.min_minutes, cfg.spray.max_service_sources) < 1:
         raise UserError(f"{name}: spray.min_per_minute, spray.min_minutes and spray.max_service_sources must be 1 or more")
+    if cfg.rotation.quiet_before_hours < 0:
+        raise UserError(f"{name}: rotation.quiet_before_hours cannot be less than 0")
     if cfg.rotation.min_joiners < 1 or cfg.rotation.max_service_sources < 1:
         raise UserError(f"{name}: rotation.min_joiners and rotation.max_service_sources must be 1 or more")
     if cfg.window_hours > cfg.lookback_hours:

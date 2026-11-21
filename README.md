@@ -228,7 +228,8 @@ same second keep the order they have in the export.
 Operators rotate through proxies: CrowdStrike lists nine for one ARTEX operator. Each address on
 its own can stay under the thresholds, so PentAIWatch also ties them together. A sweep that fires
 the probing signal and finds a few services answering is the anchor. Other addresses join it when
-they were never seen before in the lookback, their first session falls between the sweep's start and
+they had no session at all in the `rotation.quiet_before_hours` (2) before the sweep began (in any
+of the data, older than the lookback too), their first session falls between the sweep's start and
 `narrowing.max_start_delay_minutes` (15) after its end, they have
 `narrowing.min_sessions_per_service` (5) or more completed sessions to a service the sweep found,
 and `narrowing.min_focus_share` (60%) or more of their sessions go to those services. An address
@@ -236,7 +237,11 @@ that swept itself never joins, because it is scored on its own. With `rotation.m
 more joiners, the sweep and its joiners are listed together under "Rotating sources". Clients and
 monitoring that start near someone's sweep fit that rule too, so a rotation is a **lead** unless the
 sweeping address is a finding or shows fixed-interval repetition or high-rate repeated connections
-itself; then it is flagged as one campaign. A service that
+itself; then it is flagged as one campaign. Every address is "first seen" when the data begins, so
+a sweep that begins less than `quiet_before_hours` after the first session in the data cannot tell
+new addresses from old ones: it anchors a rotation only when the sweeping address is a finding of
+its own (the rotation then says its novelty is unknown), and the report counts the other such
+sweeps. A service that
 more than `rotation.max_service_sources` (20) outside addresses used in the lookback is public, such
 as a web site, so new visitors to it never tie addresses together. A campaign whose sweep is itself
 split across proxies is not tied together yet.
@@ -328,7 +333,8 @@ first is used, a warning names the others, and `--config` settles it.
   },
   "rotation": {
     "min_joiners": 2,
-    "max_service_sources": 20
+    "max_service_sources": 20,
+    "quiet_before_hours": 2
   },
   "outbound": {
     "check": true,

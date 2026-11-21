@@ -215,6 +215,9 @@ class Rotation:
     joiners: list[Joiner]
     services: list[str]          # what the sweep found that the joiners came back to
     log_sources: list[str]
+    # "checked": none of the joiners had any session in the rotation.quiet_before_hours before the
+    # sweep. "unknown": the data does not reach that far back (only a sweep that is a finding links then)
+    novelty: str = "checked"
     # "flagged" when the sweeper is a finding, or an address in it also shows fixed-interval
     # repetition or high-rate repeated connections; else "lead"
     status: str = "lead"
@@ -319,6 +322,9 @@ class Detection:
     steady_sources: list[SteadySource] = field(default_factory=list)
     spray_sources: list[SpraySource] = field(default_factory=list)
     rotations: list[Rotation] = field(default_factory=list)
+    # sweeps that found services but began too soon after the start of the data to tell whether later
+    # addresses were new (rotation.quiet_before_hours), so nothing was tied to them
+    rotation_unchecked: int = 0
     outbound_contacts: list[OutboundContact] = field(default_factory=list)
     c2_hints: list[C2Hint] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -404,6 +410,7 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
                              "SELECT count(*) FROM pw_sessions WHERE src_ip = ?", [src]).fetchone()[0]))
             for src, runs in sorted(steady.items(), key=lambda kv: (-kv[1][0].sessions, kv[0]))]
         out.rotations = _rotation(con, cfg, {f.source for f in out.findings})
+        out.rotation_unchecked = _rotation_unchecked(con, cfg, {f.source for f in out.findings})
         for g in out.rotations:
             for f in out.findings:
                 if f.source == g.sweeper:
@@ -957,14 +964,25 @@ def _rotation(con, cfg: Config, flagged: set[str]) -> list[Rotation]:
     public (``max_service_sources``). A joiner is another address first seen in the lookback between
     the sweep's start and ``max_start_delay_minutes`` after its end that, for one window from its
     first session, sent ``min_focus_share`` or more of its sessions to those services, with
-    ``min_sessions_per_service`` or more completed sessions to at least one. A sweep with
+    ``min_sessions_per_service`` or more completed sessions to at least one, and that had no session
+    at all in the ``rotation.quiet_before_hours`` before the sweep began (any of the data, older than
+    the lookback too). "First seen in the lookback" alone is not "new": every address is first seen
+    when the data begins. So a sweep that begins less than ``quiet_before_hours`` after the first
+    session in the data anchors a rotation only when the sweeper is a finding of its own; the rotation
+    then says its novelty is unknown, and ``rotation_unchecked`` counts the others. A sweep with
     ``min_joiners`` or more joiners is a rotation (the window with the most joiners, per sweeper). An
     address that fits two sweeps joins the one that started last before it came."""
     n, r = cfg.narrowing, cfg.rotation
     rows = con.execute("""
         WITH sweep AS (
-            SELECT src_ip, k, probe_start, probe_end, services FROM pw_probe
-            WHERE answered > 0 AND answered <= $max_answered_share * services),
+            -- novelty can be checked only when the data reaches quiet_before_hours back from the
+            -- sweep; otherwise only a sweep that is a finding of its own anchors a rotation
+            SELECT src_ip, k, probe_start, probe_end, services,
+                   probe_start - to_seconds($quiet) >= (SELECT min(ts) FROM flows) AS novelty_known
+            FROM pw_probe
+            WHERE answered > 0 AND answered <= $max_answered_share * services
+              AND (probe_start - to_seconds($quiet) >= (SELECT min(ts) FROM flows)
+                   OR list_contains(CAST($flagged AS VARCHAR[]), src_ip))),
         public AS (
             SELECT dst_ip, dst_port, proto FROM pw_sessions
             GROUP BY ALL HAVING count(DISTINCT src_ip) > $max_sources),
@@ -983,6 +1001,10 @@ def _rotation(con, cfg: Config, flagged: set[str]) -> list[Rotation]:
             FROM sweep w
             JOIN seen j ON j.src_ip <> w.src_ip AND j.first_ts >= w.probe_start
                        AND j.first_ts <= w.probe_end + to_seconds($max_delay)
+                       -- new: no session at all from it in the quiet period before the sweep, in any
+                       -- of the data (older than the lookback too)
+                       AND NOT EXISTS (SELECT 1 FROM flows q WHERE q.src_ip = j.src_ip
+                                       AND q.ts >= w.probe_start - to_seconds($quiet) AND q.ts < w.probe_start)
             JOIN pw_sessions s ON s.src_ip = j.src_ip AND s.start_ts < j.first_ts + to_seconds($window)
             LEFT JOIN found f ON f.sweeper = w.src_ip AND f.k = w.k AND f.dst_ip = s.dst_ip
                              AND f.proto = s.proto AND f.dst_port IS NOT DISTINCT FROM s.dst_port),
@@ -1004,7 +1026,7 @@ def _rotation(con, cfg: Config, flagged: set[str]) -> list[Rotation]:
             SELECT sweeper, k FROM joiner GROUP BY sweeper, k HAVING count(*) >= $min_joiners
             QUALIFY row_number() OVER (PARTITION BY sweeper ORDER BY count(*) DESC, k) = 1)
         SELECT j.sweeper, j.k, j.src_ip, j.sessions, j.answered, j.first_ts, j.last_ts,
-               w.probe_start, w.probe_end, w.services,
+               w.probe_start, w.probe_end, w.services, w.novelty_known,
                (SELECT count(*) FROM found f WHERE f.sweeper = j.sweeper AND f.k = j.k),
                (SELECT list(p.dst_ip || coalesce(':' || p.dst_port, '') || '/' || p.proto
                             ORDER BY p.answered DESC, p.dst_ip, p.dst_port)
@@ -1014,14 +1036,16 @@ def _rotation(con, cfg: Config, flagged: set[str]) -> list[Rotation]:
                        {"max_answered_share": float(n.max_answered_share), "max_sources": int(r.max_service_sources),
                         "protocols": [p.lower() for p in n.protocols], "max_delay": float(n.max_start_delay_minutes) * 60,
                         "window": cfg.window_hours * 3600, "min_focus": float(n.min_focus_share),
-                        "min_sessions": int(n.min_sessions_per_service), "min_joiners": int(r.min_joiners)}).fetchall()
+                        "min_sessions": int(n.min_sessions_per_service), "min_joiners": int(r.min_joiners),
+                        "quiet": float(r.quiet_before_hours) * 3600, "flagged": sorted(flagged)}).fetchall()
     groups: dict[str, Rotation] = {}
-    for sweeper, _k, src, sessions, answered, first, last, p_start, p_end, probed, found, svc in rows:
+    for sweeper, _k, src, sessions, answered, first, last, p_start, p_end, probed, known, found, svc in rows:
         g = groups.get(sweeper)
         if g is None:
             g = groups[sweeper] = Rotation(
                 sweeper=sweeper, flagged=sweeper in flagged, probe_start=_iso(p_start), probe_end=_iso(p_end),
-                services_probed=int(probed), services_found=int(found), joiners=[], services=[], log_sources=[])
+                services_probed=int(probed), services_found=int(found), joiners=[], services=[], log_sources=[],
+                novelty="checked" if known else "unknown")
         svc = list(svc or [])
         g.joiners.append(Joiner(source=src, sessions=int(sessions), answered=int(answered),
                                 services=svc[:MAX_JOINER_SERVICES], first=_iso(first), last=_iso(last)))
@@ -1029,6 +1053,19 @@ def _rotation(con, cfg: Config, flagged: set[str]) -> list[Rotation]:
     for g in groups.values():
         g.log_sources = sorted({x for ip in [g.sweeper] + [j.source for j in g.joiners] for x in log_sources(con, ip)})
     return sorted(groups.values(), key=lambda g: (-len(g.joiners), g.sweeper))
+
+
+def _rotation_unchecked(con, cfg: Config, flagged: set[str]) -> int:
+    """Sweeps that could anchor a rotation but began less than ``rotation.quiet_before_hours`` after
+    the first session in the data, from sources that are not findings."""
+    return int(con.execute("""
+        SELECT count(DISTINCT src_ip) FROM pw_probe
+        WHERE answered > 0 AND answered <= $share * services
+          AND probe_start - to_seconds($quiet) < (SELECT min(ts) FROM flows)
+          AND NOT list_contains(CAST($flagged AS VARCHAR[]), src_ip)""",
+                               {"share": float(cfg.narrowing.max_answered_share),
+                                "quiet": float(cfg.rotation.quiet_before_hours) * 3600,
+                                "flagged": sorted(flagged)}).fetchone()[0])
 
 
 # -- 9. published attacker addresses ---------------------------------------------------------
