@@ -275,8 +275,23 @@ new addresses from old ones: it anchors a rotation only when the sweeping addres
 its own (the rotation then says its novelty is unknown), and the report counts the other such
 sweeps. A service that
 more than `rotation.max_service_sources` (20) outside addresses used in the lookback is public, such
-as a web site, so new visitors to it never tie addresses together. A campaign whose sweep is itself
-split across proxies is not tied together yet.
+as a web site, so new visitors to it never tie addresses together. A sweep that is itself split
+across proxies is covered next.
+
+### Shared sweeps
+
+An operator can split the sweep itself across proxies, so that no address tries enough services to
+fire the probing signal. Per scoring window and internal /24, PentAIWatch gathers the addresses
+that did not sweep on their own but made `shared_sweep.min_probes_per_source` (5) or more first
+attempts there, mostly failed. With `shared_sweep.min_sources` (3) or more of them, whose first
+attempts together pass the probing thresholds, fail as often, and go to distinct services
+(`shared_sweep.min_split_share`, 80%: a split sweep hardly repeats itself, while ordinary internet
+scanning tries the same few ports from many addresses), they shared a sweep. When an address that
+had no session in the `rotation.quiet_before_hours` before it then comes back to a service it
+found, as narrowing defines it, the report lists that service under "Shared sweeps" as a **lead**:
+the service, the addresses that swept it and the ones that came back. It is flagged when an
+address in it is a finding of its own. A sweep spread over many networks, or slower than one
+scoring window, is not tied together. `shared_sweep.check: false` turns this off.
 
 ### Your hosts reaching out to attacker infrastructure
 
@@ -367,6 +382,12 @@ first is used, a warning names the others, and `--config` settles it.
     "min_joiners": 2,
     "max_service_sources": 20,
     "quiet_before_hours": 2
+  },
+  "shared_sweep": {
+    "check": true,
+    "min_sources": 3,
+    "min_probes_per_source": 5,
+    "min_split_share": 0.8
   },
   "baseline": {
     "check": true,
@@ -516,8 +537,10 @@ VulnScope MAX's does:
 - **Proxy rotation splits campaigns.** These tools rotate through residential, datacenter and
   free proxies or Tor when blocked. Scoring is per source address, so one campaign can be split
   across several sources, each below the thresholds or each reported on its own. New addresses
-  that come straight back to what one sweep found are tied to it (see Rotating sources), but a
-  campaign whose sweep is itself split across addresses is not tied together yet.
+  that come straight back to what one sweep found are tied to it (see Rotating sources), and a
+  sweep of one /24 split across addresses is tied together when a new address comes back to what it
+  found (see Shared sweeps). One spread over many networks, or slower than one scoring window, is
+  not.
 - **Timing sees connection starts, nothing inside a connection.** A tool that sends many requests
   over one connection it keeps open, or runs several jobs at once from one address, shows fewer
   pauses and can go unflagged.

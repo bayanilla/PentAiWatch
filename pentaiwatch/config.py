@@ -144,6 +144,22 @@ class Rotation:
 
 
 @dataclass
+class SharedSweep:
+    """Shared sweeps: several addresses split one sweep between them, each too small to fire the
+    probing signal, and then an address that was quiet before comes back to a service they found.
+    Ordinary internet scanning hits the same popular ports from many addresses; a split sweep
+    hardly repeats itself, so the addresses' first attempts must cover ``min_split_share`` or more
+    distinct services. Together they must pass the probing thresholds, against one /24. The
+    narrowing settings decide what "came back" means and how soon; rotation.quiet_before_hours
+    what "quiet before" means; rotation.max_service_sources what a public service is. A lead,
+    flagged only when an address in it is a finding of its own."""
+    check: bool = True
+    min_sources: int = 3                 # addresses that share the sweep
+    min_probes_per_source: int = 5       # first attempts each, in the window, mostly failed
+    min_split_share: float = 0.8         # distinct services / first attempts, over all of them
+
+
+@dataclass
 class Baseline:
     """Regular clients: a fixed-interval or high-rate lead from a source that already repeated to the
     same service well before, such as a health check or a partner integration that runs every day.
@@ -273,6 +289,7 @@ class Config:
     parallel: Parallel = field(default_factory=Parallel)
     rotation: Rotation = field(default_factory=Rotation)
     baseline: Baseline = field(default_factory=Baseline)
+    shared_sweep: SharedSweep = field(default_factory=SharedSweep)
     outbound: Outbound = field(default_factory=Outbound)
     # Named kinds of target: name -> ports. Your names are added; giving a default name replaces its
     # ports, and an empty list drops it.
@@ -403,7 +420,8 @@ def check(cfg: Config, name: str = "settings") -> None:
               "timing.min_pause_share": cfg.timing.min_pause_share,
               "timing.min_timed_share": cfg.timing.min_timed_share,
               "steady.max_jitter": cfg.steady.max_jitter,
-              "spray.min_answered_share": cfg.spray.min_answered_share}
+              "spray.min_answered_share": cfg.spray.min_answered_share,
+              "shared_sweep.min_split_share": cfg.shared_sweep.min_split_share}
     for key, value in shares.items():
         if not 0 <= value <= 1:
             raise UserError(f"{name}: {key} must be between 0 and 1 (0.7 means 70%)")
@@ -416,6 +434,8 @@ def check(cfg: Config, name: str = "settings") -> None:
         raise UserError(f"{name}: spray.min_per_minute, spray.min_minutes and spray.max_service_sources must be 1 or more")
     if cfg.rotation.quiet_before_hours < 0:
         raise UserError(f"{name}: rotation.quiet_before_hours cannot be less than 0")
+    if cfg.shared_sweep.min_sources < 2 or cfg.shared_sweep.min_probes_per_source < 1:
+        raise UserError(f"{name}: shared_sweep.min_sources must be 2 or more, and shared_sweep.min_probes_per_source 1 or more")
     if cfg.baseline.before_hours < 0 or cfg.baseline.min_sessions < 1:
         raise UserError(f"{name}: baseline.before_hours cannot be less than 0, and baseline.min_sessions must be 1 or more")
     if cfg.rotation.min_joiners < 1 or cfg.rotation.max_service_sources < 1:

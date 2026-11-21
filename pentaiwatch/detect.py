@@ -227,6 +227,32 @@ class Rotation:
 
 
 @dataclass
+class SharedReturn:
+    """One service a shared sweep found, and the addresses that came back to it."""
+    service: str                 # "host:port/proto"
+    sources: list[str]           # addresses that came back, first to come first
+    answered: int                # their completed sessions to it in the window from their first one
+    first: str
+
+
+@dataclass
+class SharedSweep:
+    """Several addresses that split one sweep of a /24 between them, and the services found by it
+    that a quiet-before address came back to."""
+    network: str                 # the swept /24
+    sweepers: list[str]          # the addresses that shared it
+    probe_start: str
+    probe_end: str
+    services_probed: int
+    hosts_probed: int
+    services_found: int          # answered and not public
+    returns: list[SharedReturn]
+    log_sources: list[str]
+    status: str = "lead"         # "flagged" when an address in it is a finding of its own
+    backed_by: list[str] = field(default_factory=list)
+
+
+@dataclass
 class SprayRun:
     """A source's flood of completed connections to one service."""
     service: str                 # "host:port/proto"
@@ -347,6 +373,7 @@ class Detection:
     steady_sources: list[SteadySource] = field(default_factory=list)
     spray_sources: list[SpraySource] = field(default_factory=list)
     rotations: list[Rotation] = field(default_factory=list)
+    shared_sweeps: list[SharedSweep] = field(default_factory=list)
     # sources a known_scanners.csv authorization covers (owner, expiry, scope): scored, not flagged
     authorized: list[AuthorizedSource] = field(default_factory=list)
     # sweeps that found services but began too soon after the start of the data to tell whether later
@@ -442,6 +469,8 @@ def detect(con, cfg: Config, *, while_scored=None) -> Detection:
             for f in out.findings:
                 if f.source == g.sweeper:
                     f.rotation = g
+        if cfg.shared_sweep.check:
+            out.shared_sweeps = _shared_sweeps(con, cfg, {f.source for f in out.findings})
         spray = _spray(con, cfg)
         for f in out.findings:
             f.spray = spray.pop(f.source, [])
@@ -1085,6 +1114,104 @@ def _rotation(con, cfg: Config, flagged: set[str]) -> list[Rotation]:
     for g in groups.values():
         g.log_sources = sorted({x for ip in [g.sweeper] + [j.source for j in g.joiners] for x in log_sources(con, ip)})
     return sorted(groups.values(), key=lambda g: (-len(g.joiners), g.sweeper))
+
+
+MAX_SHARED_SWEEPERS = 50
+
+
+def _shared_sweeps(con, cfg: Config, flagged: set[str]) -> list[SharedSweep]:
+    """Shared sweeps (see config.SharedSweep). Per scoring window and internal IPv4 /24: the outside
+    addresses that did not fire signal 1 on their own but made ``min_probes_per_source`` or more
+    first attempts at it in the window, ``probing.min_failed_share`` of them failed. With
+    ``min_sources`` or more such addresses whose first attempts together pass the probing
+    thresholds, fail as often, and cover ``min_split_share`` or more distinct services, they shared
+    a sweep. Its services that answered and are not public are what it found. An address comes back
+    to one when its first session to it falls between the sweep's start and
+    ``narrowing.max_start_delay_minutes`` after its end, it then has
+    ``narrowing.min_sessions_per_service`` or more completed sessions to it within one window, and it
+    had no session at all in the ``rotation.quiet_before_hours`` before the sweep began (a sweep that
+    begins sooner than that after the start of the data is skipped). A sweeper may come back too."""
+    p, n, r, sh = cfg.probing, cfg.narrowing, cfg.rotation, cfg.shared_sweep
+    rows = con.execute("""
+        WITH firsts AS (
+            SELECT src_ip, dst_ip, dst_port, proto, min(start_ts) AS first_ts, arg_min(outcome, seq) AS first_outcome,
+                   count(*) FILTER (outcome = 'answered') AS answered,
+                   regexp_extract(dst_ip, '^([0-9]+[.][0-9]+[.][0-9]+)[.][0-9]+$', 1) AS net
+            FROM pw_sessions WHERE src_ip NOT IN (SELECT src_ip FROM pw_probe)
+            GROUP BY src_ip, dst_ip, dst_port, proto),
+        b AS (SELECT *, CAST(floor(epoch(first_ts) / $step) AS BIGINT) AS bucket FROM firsts WHERE net <> ''),
+        per_src AS (
+            SELECT src_ip, k, net FROM b, unnest([b.bucket, b.bucket - 1]) AS w(k)
+            GROUP BY src_ip, k, net
+            HAVING count(*) >= $min_probes AND count(*) FILTER (first_outcome = 'failed') >= $min_failed * count(*)),
+        members AS (
+            SELECT p.k, b.* FROM per_src p JOIN b ON b.src_ip = p.src_ip AND b.net = p.net AND b.bucket IN (p.k, p.k + 1)),
+        grp AS (
+            SELECT k, net, min(first_ts) AS t0, max(first_ts) AS t1, count(DISTINCT src_ip) AS sources,
+                   count(DISTINCT (dst_ip, dst_port, proto)) AS services, count(DISTINCT dst_ip) AS hosts,
+                   count(DISTINCT dst_port) FILTER (proto IN ('tcp', 'udp')) AS ports
+            FROM members GROUP BY k, net
+            HAVING sources >= $min_sources AND (ports >= $min_ports OR hosts >= $min_hosts)
+               AND count(*) FILTER (first_outcome = 'failed') >= $min_failed * count(*)
+               AND count(DISTINCT (dst_ip, dst_port, proto)) >= $min_split * count(*)
+               AND min(first_ts) - to_seconds($quiet) >= (SELECT min(ts) FROM flows)),
+        public AS (
+            SELECT dst_ip, dst_port, proto FROM pw_sessions GROUP BY ALL HAVING count(DISTINCT src_ip) > $max_sources),
+        found AS (
+            SELECT DISTINCT m.k, m.net, m.dst_ip, m.dst_port, m.proto FROM members m JOIN grp USING (k, net)
+            WHERE m.answered > 0 AND list_contains(CAST($protocols AS VARCHAR[]), m.proto)
+              AND NOT EXISTS (SELECT 1 FROM public u WHERE u.dst_ip = m.dst_ip AND u.proto = m.proto
+                              AND u.dst_port IS NOT DISTINCT FROM m.dst_port)),
+        came AS (
+            SELECT g.k, g.net, s.src_ip, s.dst_ip, s.dst_port, s.proto, min(s.start_ts) AS first_ts
+            FROM grp g JOIN found f USING (k, net)
+            JOIN pw_sessions s ON s.dst_ip = f.dst_ip AND s.proto = f.proto AND s.dst_port IS NOT DISTINCT FROM f.dst_port
+            GROUP BY ALL
+            HAVING min(s.start_ts) >= min(g.t0) AND min(s.start_ts) <= max(g.t1) + to_seconds($max_delay)),
+        back AS (
+            SELECT c.k, c.net, c.src_ip, c.dst_ip, c.dst_port, c.proto, c.first_ts,
+                   count(*) FILTER (s.outcome = 'answered') AS answered
+            FROM came c JOIN grp g USING (k, net)
+            JOIN pw_sessions s ON s.src_ip = c.src_ip AND s.dst_ip = c.dst_ip AND s.proto = c.proto
+                              AND s.dst_port IS NOT DISTINCT FROM c.dst_port
+                              AND s.start_ts >= c.first_ts AND s.start_ts < c.first_ts + to_seconds($window)
+            WHERE NOT EXISTS (SELECT 1 FROM flows q WHERE q.src_ip = c.src_ip
+                              AND q.ts >= g.t0 - to_seconds($quiet) AND q.ts < g.t0)
+            GROUP BY ALL HAVING count(*) FILTER (s.outcome = 'answered') >= $min_sessions)
+        SELECT g.k, g.net, g.t0, g.t1, g.services, g.hosts,
+               (SELECT list(DISTINCT m.src_ip ORDER BY m.src_ip) FROM members m WHERE m.k = g.k AND m.net = g.net),
+               (SELECT count(*) FROM found f WHERE f.k = g.k AND f.net = g.net),
+               x.dst_ip || coalesce(':' || x.dst_port, '') || '/' || x.proto, x.src_ip, x.answered, x.first_ts
+        FROM grp g JOIN back x USING (k, net)
+        ORDER BY g.t0, g.net, x.first_ts, x.src_ip""",
+                       {"step": cfg.window_hours * 3600 / 2, "min_probes": int(sh.min_probes_per_source),
+                        "min_failed": float(p.min_failed_share), "min_sources": int(sh.min_sources),
+                        "min_ports": int(p.min_ports), "min_hosts": int(p.min_hosts), "min_split": float(sh.min_split_share),
+                        "quiet": float(r.quiet_before_hours) * 3600, "max_sources": int(r.max_service_sources),
+                        "protocols": [x.lower() for x in n.protocols], "max_delay": float(n.max_start_delay_minutes) * 60,
+                        "window": cfg.window_hours * 3600, "min_sessions": int(n.min_sessions_per_service)}).fetchall()
+    sweeps: dict[tuple, SharedSweep] = {}
+    for _k, net, t0, t1, services, hosts, sweepers, found, service, src, answered, first in rows:
+        key = (net, tuple(sweepers))          # a sweep seen in two overlapping windows is one sweep
+        g = sweeps.get(key)
+        if g is None:
+            g = sweeps[key] = SharedSweep(
+                network=f"{net}.0/24", sweepers=list(sweepers)[:MAX_SHARED_SWEEPERS], probe_start=_iso(t0),
+                probe_end=_iso(t1), services_probed=int(services), hosts_probed=int(hosts),
+                services_found=int(found), returns=[], log_sources=[])
+        ret = next((x for x in g.returns if x.service == service), None)
+        if ret is None:
+            ret = SharedReturn(service=service, sources=[], answered=0, first=_iso(first))
+            g.returns.append(ret)
+        if src not in ret.sources:
+            ret.sources.append(src)
+            ret.answered += int(answered)
+    for g in sweeps.values():
+        everyone = set(g.sweepers) | {ip for x in g.returns for ip in x.sources}
+        g.log_sources = sorted({x for ip in everyone for x in log_sources(con, ip)})
+        g.backed_by = [f"{ip} is a finding" for ip in sorted(everyone & flagged)]
+        g.status = "flagged" if g.backed_by else "lead"
+    return sorted(sweeps.values(), key=lambda g: (g.probe_start, g.network))
 
 
 def _rotation_unchecked(con, cfg: Config, flagged: set[str]) -> int:
